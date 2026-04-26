@@ -104,20 +104,20 @@ export function loadAtlasConfig(
 ): AtlasServerConfig {
   const cwd = process.cwd();
   const seedSourceRoot = readArgValue(argv, '--source-root') ?? readEnv('ATLAS_SOURCE_ROOT') ?? defaults.sourceRoot ?? cwd;
-  const seedAtlasEnv = readAtlasEnvFile(path.join(seedSourceRoot, '.atlas', '.env'));
+  const seedAtlasEnv = readAtlasEnvFile(path.join(seedSourceRoot, '.brain', '.env'));
   const sourceRoot = readConfigValue(argv, '--source-root', 'ATLAS_SOURCE_ROOT', seedAtlasEnv) ?? defaults.sourceRoot ?? cwd;
   const atlasEnv = sourceRoot === seedSourceRoot
     ? seedAtlasEnv
     : {
         ...seedAtlasEnv,
-        ...readAtlasEnvFile(path.join(sourceRoot, '.atlas', '.env')),
+        ...readAtlasEnvFile(path.join(sourceRoot, '.brain', '.env')),
       };
   const workspace = readConfigValue(argv, '--workspace', 'ATLAS_WORKSPACE', atlasEnv)
     ?? defaults.workspace
     ?? path.basename(sourceRoot).toLowerCase();
   const dbPath = readConfigValue(argv, '--db', 'ATLAS_DB_PATH', atlasEnv)
     ?? defaults.dbPath
-    ?? path.join(sourceRoot, '.atlas', 'atlas.sqlite');
+    ?? path.join(sourceRoot, '.brain', 'atlas.sqlite');
   const concurrency = readInt(
     readArgValue(argv, '--concurrency') ?? readEnv('ATLAS_CONCURRENCY') ?? readAtlasEnv('ATLAS_CONCURRENCY', atlasEnv),
     10,

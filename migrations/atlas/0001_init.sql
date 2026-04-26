@@ -57,7 +57,7 @@ CREATE INDEX IF NOT EXISTS idx_import_edges_workspace_target
 
 CREATE VIRTUAL TABLE IF NOT EXISTS atlas_embeddings USING vec0(
   file_id INTEGER PRIMARY KEY,
-  embedding float[1536]
+  embedding float[384]
 );
 
 CREATE TABLE IF NOT EXISTS atlas_reextract_queue (

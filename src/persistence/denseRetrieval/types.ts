@@ -9,8 +9,6 @@
  * local BGE sentence embeddings persisted in sqlite-vec.
  */
 
-import type { TranscriptChunk } from '../transcriptTypes.js';
-
 /** Gemini task-type hint — asymmetric retrieval uses DOCUMENT for chunks, QUERY for queries. */
 export type EmbedTaskType =
   | 'RETRIEVAL_DOCUMENT'
@@ -69,7 +67,7 @@ export interface DenseEmbedding {
 /** Result of a dense similarity search. */
 export interface DenseSearchHit {
   chunkId: string;
-  chunk: TranscriptChunk;
+  chunk: unknown;
   /** Cosine similarity in [-1, 1]; higher = more similar. */
   score: number;
 }

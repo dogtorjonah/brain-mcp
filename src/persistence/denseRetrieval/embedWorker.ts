@@ -4,7 +4,7 @@
  * Runs the `@huggingface/transformers` feature-extraction pipeline inside a
  * dedicated worker thread so the main thread's event loop stays responsive
  * during ONNX inference. Main-thread client lives in `embedClient.ts` and
- * opts into this worker when `RELAY_EMBED_WORKER=1`.
+ * opts into this worker when `BRAIN_EMBED_WORKER=1`.
  *
  * Protocol (parent -> worker):
  *   { type: 'embed', id, texts, taskType, config }

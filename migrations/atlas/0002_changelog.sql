@@ -41,7 +41,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS atlas_changelog_fts USING fts5(
 
 CREATE VIRTUAL TABLE IF NOT EXISTS atlas_changelog_embeddings USING vec0(
   changelog_id INTEGER PRIMARY KEY,
-  embedding float[1536]
+  embedding float[384]
 );
 
 -- FTS sync triggers — keep atlas_changelog_fts in sync with atlas_changelog

@@ -192,7 +192,7 @@ async function promptInitWizard(config: import('./types.js').AtlasServerConfig):
       ...config,
       sourceRoot,
       workspace,
-      dbPath: path.join(sourceRoot, '.atlas', 'atlas.sqlite'),
+      dbPath: path.join(sourceRoot, '.brain', 'atlas.sqlite'),
       concurrency,
     };
   } finally {
@@ -207,7 +207,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const configArgs = isInit ? initArgs?.configArgs ?? [] : argv;
   const config = loadAtlasConfig(configArgs, {
     sourceRoot: targetRoot,
-    dbPath: path.join(targetRoot, '.atlas', 'atlas.sqlite'),
+    dbPath: path.join(targetRoot, '.brain', 'atlas.sqlite'),
     workspace: path.basename(targetRoot).toLowerCase(),
   });
 

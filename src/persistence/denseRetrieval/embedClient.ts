@@ -12,7 +12,7 @@
  *   - **Inline (default):** `@huggingface/transformers` runs on the main
  *     thread. Simple; blocks the event loop during ONNX inference (~100-300ms
  *     per batch of 16). Fine for low-throughput tap queries.
- *   - **Worker (`RELAY_EMBED_WORKER=1`):** delegate to a long-lived
+ *   - **Worker (`BRAIN_EMBED_WORKER=1`):** delegate to a long-lived
  *     `node:worker_threads` worker (see `embedWorker.ts`) so the main thread
  *     stays responsive under multi-agent load or during large ingest
  *     backfills. The worker caches the extractor across requests and
@@ -25,10 +25,10 @@ import path from 'node:path';
 import type { DenseEmbedConfig, EmbedTaskType } from './types.js';
 
 /**
- * Set `RELAY_EMBED_WORKER=1` to route all embedBatch/embedQuery calls
+ * Set `BRAIN_EMBED_WORKER=1` to route all embedBatch/embedQuery calls
  * through a dedicated worker thread. Default off — inline mode.
  */
-const USE_WORKER = process.env.RELAY_EMBED_WORKER === '1';
+const USE_WORKER = process.env.BRAIN_EMBED_WORKER === '1';
 
 type ExtractorResult = {
   data: Float32Array | number[];
@@ -139,7 +139,7 @@ function splitBatchResult(result: ExtractorResult, batchSize: number): Float32Ar
 
 // ── Worker-thread mode ──────────────────────────────────────────────────
 //
-// When RELAY_EMBED_WORKER=1, all inference runs in a dedicated long-lived
+// When BRAIN_EMBED_WORKER=1, all inference runs in a dedicated long-lived
 // worker process. The worker is lazy-spawned on first call, survives across
 // embed requests, and is respawned if it dies. Each in-flight request carries
 // a numeric id so responses pair up via a pending-resolver map.
@@ -297,7 +297,7 @@ async function embedBatchViaWorker(
  * Embed a batch of texts. Returns L2-normalized vectors in the same order as input.
  * On unrecoverable failure, throws the last error encountered.
  *
- * Routes through the worker thread when `RELAY_EMBED_WORKER=1`, otherwise
+ * Routes through the worker thread when `BRAIN_EMBED_WORKER=1`, otherwise
  * runs inline on the calling thread.
  */
 export async function embedBatch(

@@ -22,5 +22,5 @@ CREATE INDEX IF NOT EXISTS idx_atlas_source_chunks_file
 
 CREATE VIRTUAL TABLE IF NOT EXISTS atlas_source_chunk_embeddings USING vec0(
   chunk_id INTEGER PRIMARY KEY,
-  embedding float[1536]
+  embedding float[384]
 );

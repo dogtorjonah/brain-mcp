@@ -2,11 +2,9 @@ import fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const MIGRATION_DIR_RELATIVE_CANDIDATES = [
-  './migrations/',
-  // Built relay output does not currently copy SQL assets into dist/.
-  // Fall back to the source tree so atlas init/reindex still finds migrations.
-  '../../src/atlas/migrations/',
-  '../../../../src/atlas/migrations/',
+  '../../migrations/atlas/',
+  '../migrations/atlas/',
+  './migrations/atlas/',
 ];
 
 export function resolveAtlasMigrationDir(moduleUrl: string = import.meta.url): string {
