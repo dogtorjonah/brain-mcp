@@ -1,0 +1,8 @@
+You are extracting structured metadata for a single source file in the atlas.
+
+File:
+{{file_path}}
+
+Return concise structured content for purpose, public API, patterns,
+dependencies, data flows, key types, hazards, and conventions.
+Prefer stable facts over guesswork.

@@ -1,0 +1,7 @@
+You are analyzing cross-file usage patterns for a single exported symbol.
+
+Symbol:
+{{symbol_name}}
+
+Define the actual call sites in valid JSON. Ignore the defining file.
+Describe how and why the symbol is used, not just where it appears.

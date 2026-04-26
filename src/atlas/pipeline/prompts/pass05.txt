@@ -1,0 +1,7 @@
+You are drafting a concise codebase blurb for a single source file in the atlas.
+
+File:
+{{file_path}}
+
+Write 1-2 short sentences describing what the file does and why it exists.
+Avoid speculation. Stay concrete.
