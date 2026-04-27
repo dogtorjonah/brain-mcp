@@ -36,8 +36,12 @@ class AtlasToolClient {
     private readonly runtime: AtlasRuntimeShape,
   ) {}
 
-  static async create(sourceRoot: string, edgeEmitter?: unknown): Promise<AtlasToolClient> {
-    const runtime = await createAtlasRuntime(sourceRoot, edgeEmitter);
+  static async create(
+    sourceRoot: string,
+    edgeEmitter?: unknown,
+    options: AtlasRuntimeOpenOptions = {},
+  ): Promise<AtlasToolClient> {
+    const runtime = await createAtlasRuntime(sourceRoot, edgeEmitter, options);
     const client = new AtlasToolClient(sourceRoot, runtime);
     await client.captureTools();
     return client;
@@ -97,7 +101,10 @@ export class AtlasToolPool {
   async callTool(cwd: string, name: string, args: Record<string, unknown>, caller: CallerContext): Promise<BrainToolResult> {
     try {
       const sourceRoot = findSourceRoot(cwd);
-      const client = await this.pool.get(sourceRoot, () => AtlasToolClient.create(sourceRoot, this.edgeEmitter));
+      const openOptions = resolveAtlasOpenOptions(name, args);
+      const client = await this.pool.get(sourceRoot, () =>
+        AtlasToolClient.create(sourceRoot, this.edgeEmitter, openOptions),
+      );
       return client.callTool(name, enrichAtlasArgs(name, args, caller), caller);
     } catch (error) {
       return normalizeError(error);
@@ -152,7 +159,38 @@ function findSourceRoot(cwd: string): string {
   return path.resolve(cwd || process.cwd());
 }
 
-async function createAtlasRuntime(sourceRoot: string, edgeEmitter?: unknown): Promise<AtlasRuntimeShape> {
+interface AtlasRuntimeOpenOptions {
+  /** Allow `openAtlasDatabase` to create a new file. Only set for explicit init/reset. */
+  allowCreate?: boolean;
+  /** Forcibly claim an existing un-marked DB as brain-mcp's (for `init force=true`). */
+  forceClaim?: boolean;
+}
+
+/**
+ * Decide whether the caller is permitted to create / claim the atlas DB.
+ * Only `atlas_admin action=init` (and `reset`) gets to scaffold a new DB —
+ * every other tool call must operate on an already-initialized atlas.
+ */
+function resolveAtlasOpenOptions(
+  toolName: string,
+  args: Record<string, unknown>,
+): AtlasRuntimeOpenOptions {
+  if (toolName !== 'atlas_admin') return {};
+  const action = typeof args.action === 'string' ? args.action : '';
+  if (action === 'init' || action === 'reset') {
+    return {
+      allowCreate: true,
+      forceClaim: args.force === true || args.force === 'true',
+    };
+  }
+  return {};
+}
+
+async function createAtlasRuntime(
+  sourceRoot: string,
+  edgeEmitter?: unknown,
+  openOptions: AtlasRuntimeOpenOptions = {},
+): Promise<AtlasRuntimeShape> {
   const configModulePath = '../atlas/config.js';
   const dbModulePath = '../atlas/db.js';
   const migrationDirModulePath = '../atlas/migrationDir.js';
@@ -188,6 +226,9 @@ async function createAtlasRuntime(sourceRoot: string, edgeEmitter?: unknown): Pr
     migrationDir: migrationModule.ATLAS_MIGRATION_DIR,
     sqliteVecExtension: config.sqliteVecExtension,
     embeddingDimensions: config.embeddingDimensions,
+    sourceRoot,
+    allowCreate: openOptions.allowCreate ?? false,
+    forceClaim: openOptions.forceClaim ?? false,
   });
 
   return { config, db, edgeEmitter };

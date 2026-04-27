@@ -3,6 +3,7 @@ import type { ToolRegistry } from '../daemon/toolRegistry.js';
 import type { BrainToolResult, CallerContext } from '../daemon/protocol.js';
 import { isRecord, safeJsonStringify } from '../daemon/protocol.js';
 import { scheduleRespawnKill, writeRespawnSentinel, type RespawnChannel } from '../io/respawn.js';
+import { buildRichHandoff } from './brain_handoff.js';
 
 export const BRAIN_RESPAWN_ADAPTER_ACTION = 'brain_respawn_adapter_action';
 
@@ -42,11 +43,35 @@ async function handleBrainRespawn(
   caller: CallerContext,
 ): Promise<BrainToolResult> {
   const method = readMethod(args.method);
-  const handoffMarkdown = readString(args.handoff_markdown) ?? readString(args.handoff) ??
-    buildStructuredHandoff(runtime, caller, args);
   const killDelayMs = readPositiveInt(args.kill_delay_ms) ?? 200;
   const wrapperTarget = resolveWrapperTarget(args, caller);
   const identityName = resolveIdentity(runtime, caller, args);
+
+  // If the caller asked for a specific identity (different from what's
+  // currently bound to this wrapper), update the wrapper_identity binding
+  // BEFORE building the handoff. This ensures (a) the rich handoff builder
+  // walks the requested identity's lineage, and (b) the new claude session
+  // wakes up bound to the requested identity instead of falling through to
+  // the prior auto-minted name.
+  const explicitIdentity = readString(args.identity);
+  if (
+    explicitIdentity &&
+    explicitIdentity !== 'unknown' &&
+    wrapperTarget?.wrapperPid
+  ) {
+    try {
+      runtime.identityStore.setWrapperBinding(wrapperTarget.wrapperPid, explicitIdentity, {
+        cwd: caller.cwd,
+        source: 'respawn-explicit',
+      });
+    } catch {
+      // Binding update is best-effort; the meta sidecar still propagates
+      // the requested identity to the wrapper for export.
+    }
+  }
+
+  const handoffMarkdown = readString(args.handoff_markdown) ?? readString(args.handoff) ??
+    await buildRespawnHandoffMarkdown(runtime, caller, args);
 
   if (method !== 'self-spawn' && wrapperTarget) {
     const write = writeRespawnSentinel({
@@ -57,6 +82,7 @@ async function handleBrainRespawn(
       metadata: {
         effort: readString(args.effort),
         model: readString(args.model),
+        identity: explicitIdentity,
       },
     });
 
@@ -148,88 +174,55 @@ async function handleBrainRespawn(
   };
 }
 
-function buildStructuredHandoff(
+/**
+ * Build the markdown the wrapper will inject as the next session's first user
+ * message. Always uses the rich `brain_handoff` generator (transcript reduce +
+ * identity snapshot + atlas inlay + lifetime changelog arc).
+ *
+ * If the caller passed an explicit `note` / `handoff_note`, that note is
+ * prepended as a "## Active Task Note" block above the rich content.
+ *
+ * Throws when the rich handoff cannot be built — typically because no
+ * transcript exists for this cwd. respawn surfaces the failure to the caller
+ * rather than ferrying a degraded handoff into the next session.
+ */
+async function buildRespawnHandoffMarkdown(
   runtime: BrainDaemonRuntime,
   caller: CallerContext,
   args: Record<string, unknown>,
-): string {
-  const identityName = resolveIdentity(runtime, caller, args);
-  const profile = identityName !== 'unknown' ? runtime.identityStore.getProfile(identityName) : null;
-  const handoffNote = identityName !== 'unknown' ? runtime.identityStore.getHandoffNote(identityName) : null;
-  const sops = identityName !== 'unknown' ? runtime.identityStore.listSops(identityName).slice(0, 8) : [];
-  const recentChain = identityName !== 'unknown' ? runtime.identityStore.getRecentChain(identityName, 12) : [];
-  const openHazards = identityName !== 'unknown'
-    ? runtime.edgeEmitter.getOpenHazards(identityName, { limit: 12 })
-    : [];
-  const recentCommits = identityName !== 'unknown'
-    ? runtime.edgeEmitter.query({ identityName, kind: 'commit', limit: 12 })
-    : [];
+): Promise<string> {
   const explicitNote = readString(args.note) ?? readString(args.handoff_note);
-  const now = new Date().toISOString();
+  const identityFromArgs = readString(args.identity);
+  const cwdFromArgs = readString(args.cwd);
+  const sessionFromArgs = readString(args.session_id);
 
-  const lines: string[] = [
-    '# Brain Respawn Handoff',
-    '',
-    `Generated: ${now}`,
-    `Identity: ${identityName}`,
-    `Session: ${caller.sessionId ?? caller.env.CLAUDE_SESSION_ID ?? 'unknown'}`,
-    `Working directory: ${readString(args.cwd) ?? caller.cwd}`,
-    '',
-    '## Identity',
-    profile ? `- ${profile.name}: ${profile.blurb || '(no blurb)'}` : '- No identity profile found yet.',
-  ];
-
-  if (explicitNote) {
-    lines.push('', '## Active Task Note', explicitNote);
-  }
-
-  if (handoffNote?.note) {
-    lines.push('', '## Persistent Handoff Note', handoffNote.note);
-  }
-
-  lines.push('', '## Open Hazards');
-  if (openHazards.length === 0) {
-    lines.push('- None recorded.');
-  } else {
-    for (const hazard of openHazards) {
-      lines.push(`- ${hazard.workspace}/${hazard.filePath}: ${hazard.hazard}`);
-    }
-  }
-
-  lines.push('', '## Recent Commits');
-  if (recentCommits.length === 0) {
-    lines.push('- None recorded.');
-  } else {
-    for (const commit of recentCommits) {
-      lines.push(`- ${commit.workspace}/${commit.filePath} at ${new Date(commit.ts).toISOString()}`);
-    }
-  }
-
-  lines.push('', '## Active SOPs');
-  if (sops.length === 0) {
-    lines.push('- None recorded.');
-  } else {
-    for (const sop of sops) {
-      lines.push(`- ${sop.title}: ${sop.body.slice(0, 240).replace(/\s+/g, ' ')}`);
-    }
-  }
-
-  lines.push('', '## Recent Identity Chain');
-  if (recentChain.length === 0) {
-    lines.push('- None recorded.');
-  } else {
-    for (const event of recentChain) {
-      lines.push(`- ${new Date(event.ts).toISOString()} ${event.eventKind} ${event.cwd ?? ''}`.trim());
-    }
-  }
-
-  lines.push(
-    '',
-    '## Continue',
-    'Pick up from the active task note, preserve the identity, and use brain_search/atlas tools before editing.',
+  const rich = await buildRichHandoff(
+    {
+      identity: identityFromArgs,
+      cwd: cwdFromArgs,
+      session_id: sessionFromArgs,
+      include_atlas_context: true,
+    },
+    caller,
+    {
+      homeDb: runtime.homeDb,
+      identityStore: runtime.identityStore,
+      atlasTools: runtime.atlasTools,
+      getCurrentIdentity: () => runtime.getCurrentIdentity(),
+      getCurrentSessionId: () => runtime.getCurrentSessionId(),
+    },
   );
 
-  return `${lines.join('\n')}\n`;
+  if (!rich.ok) {
+    throw new Error(`brain_respawn: rich handoff unavailable — ${rich.reason}`);
+  }
+
+  return prependActiveTaskNote(rich.markdown, explicitNote);
+}
+
+function prependActiveTaskNote(markdown: string, note: string | undefined): string {
+  if (!note) return markdown;
+  return `## Active Task Note\n\n${note}\n\n${markdown}`;
 }
 
 function resolveWrapperTarget(args: Record<string, unknown>, caller: CallerContext): WrapperTarget | null {

@@ -207,28 +207,15 @@ function migrateRebirthIndex(homeDb: HomeDb, result: MigrationResult, dryRun: bo
 }
 
 // ──────────────────────────────────────────
-// Helpers
+// Public API
 // ──────────────────────────────────────────
 
-function parseArgs(): { dryRun: boolean; verbose: boolean } {
-  const args = process.argv.slice(2);
-  let dryRun = false;
-  let verbose = false;
-
-  for (let i = 0; i < args.length; i++) {
-    if (args[i] === '--dry-run') dryRun = true;
-    if (args[i] === '--verbose') verbose = true;
-  }
-
-  return { dryRun, verbose };
+export interface RunMigrateOptions {
+  dryRun?: boolean;
 }
 
-// ──────────────────────────────────────────
-// Main
-// ──────────────────────────────────────────
-
-function main(): void {
-  const { dryRun } = parseArgs();
+export function runMigrate(opts: RunMigrateOptions = {}): MigrationResult {
+  const dryRun = !!opts.dryRun;
 
   console.log('[brain-mcp] Migration starting...');
   if (dryRun) console.log('[brain-mcp] DRY RUN — no writes');
@@ -242,17 +229,12 @@ function main(): void {
     errors: [],
   };
 
-  // Open (or create) the brain home DB.
-  const homeDb = dryRun ? null as any : HomeDb.open();
+  const homeDb = dryRun ? null as unknown as HomeDb : HomeDb.open();
 
   try {
-    // Phase 1: Identity filesystem.
     migrateIdentityFilesystem(homeDb, result, dryRun);
-
-    // Phase 2: rebirth-index.sqlite.
     migrateRebirthIndex(homeDb, result, dryRun);
 
-    // Summary.
     console.log('\n[brain-mcp] Migration complete:');
     console.log(`  Identities migrated:    ${result.identitiesMigrated}`);
     console.log(`  Chain events migrated:  ${result.chainEventsMigrated}`);
@@ -268,6 +250,20 @@ function main(): void {
   } finally {
     if (!dryRun) homeDb.close();
   }
+
+  return result;
 }
 
-main();
+// ──────────────────────────────────────────
+// Standalone entrypoint
+// ──────────────────────────────────────────
+
+function parseStandaloneArgs(): RunMigrateOptions {
+  const args = process.argv.slice(2);
+  return { dryRun: args.includes('--dry-run') };
+}
+
+const isDirectInvocation = process.argv[1]?.endsWith('migrate.js') || process.argv[1]?.endsWith('migrate.ts');
+if (isDirectInvocation) {
+  runMigrate(parseStandaloneArgs());
+}

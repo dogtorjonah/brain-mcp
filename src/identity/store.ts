@@ -15,6 +15,19 @@ import type { HomeDb } from '../home/db.js';
 
 type DatabaseType = HomeDb['db'];
 
+/**
+ * Validate an identity name is filesystem-safe and sane for downstream use.
+ * Mirrors rebirth-mcp's rules so identities round-trip cleanly between the
+ * two systems if a user ever shares names across tools.
+ */
+export function isValidIdentityName(name: string): boolean {
+  if (!name || name === '.' || name === '..') return false;
+  if (name.length > 128) return false;
+  if (/[\/\\\s\n\r\0]/.test(name)) return false;
+  if (name.startsWith('-')) return false;
+  return true;
+}
+
 // ──────────────────────────────────────────
 // Types
 // ──────────────────────────────────────────
@@ -216,6 +229,31 @@ export class IdentityStore {
     return this.getChain(name, limit);
   }
 
+  /**
+   * Find the most recent session_id recorded in this identity's chain,
+   * skipping `excludeSessionId` (typically the live session we're bridging
+   * FROM). Used by the rebirth handoff builder to bridge a fresh session
+   * with no chain link to the identity's prior lineage — covers the
+   * "/identity attach + no prior turns" case so the new session inherits
+   * real context instead of building a thin handoff from itself.
+   *
+   * Anchor event kinds: 'spawn', 'rebirth', 'mint'. Other kinds (commit,
+   * hazard, etc.) don't represent session boundaries.
+   */
+  findLastSessionForIdentity(identityName: string, excludeSessionId?: string): string | null {
+    if (!isValidIdentityName(identityName)) return null;
+    const row = this.db.prepare(`
+      SELECT session_id, ts FROM identity_chain
+      WHERE identity_name = ?
+        AND session_id IS NOT NULL
+        AND session_id != COALESCE(?, '')
+        AND event_kind IN ('spawn','rebirth','mint','respawn_requested')
+      ORDER BY ts DESC
+      LIMIT 1
+    `).get(identityName, excludeSessionId ?? null) as { session_id: string } | undefined;
+    return row?.session_id ?? null;
+  }
+
   // ──────────────────────────────────────────
   // SOPs
   // ──────────────────────────────────────────
@@ -308,6 +346,146 @@ export class IdentityStore {
   // ──────────────────────────────────────────
   // Session binding
   // ──────────────────────────────────────────
+
+  // ──────────────────────────────────────────
+  // Auto-mint + wrapper binding
+  // ──────────────────────────────────────────
+
+  /**
+   * Mint the next sequential identity name in the `claude-NN` series.
+   *
+   * Scans `identity_profiles` for names matching `claude-<digits>`, picks
+   * `MAX(NN) + 1`, and zero-pads to width 2 (so the first nine fit `claude-01`
+   * through `claude-09`; the tenth is `claude-10`, etc; once you pass 99,
+   * width grows naturally to `claude-100` and beyond).
+   *
+   * Pure name generator — does NOT create the profile. Caller is responsible
+   * for `create()` so the chain event ordering stays explicit.
+   */
+  mintNextSequentialName(): string {
+    const row = this.db.prepare(`
+      SELECT MAX(CAST(SUBSTR(name, 8) AS INTEGER)) AS n
+      FROM identity_profiles
+      WHERE name GLOB 'claude-[0-9]*'
+        AND SUBSTR(name, 8) GLOB '[0-9]*'
+    `).get() as { n: number | null };
+    const next = (row.n ?? 0) + 1;
+    return `claude-${String(next).padStart(2, '0')}`;
+  }
+
+  /** Read the wrapper -> identity binding for a wrapper PID, or null. */
+  getWrapperBinding(wrapperPid: number): { identityName: string; boundAt: number; source: string } | null {
+    if (!Number.isFinite(wrapperPid) || wrapperPid <= 0) return null;
+    const row = this.db.prepare(
+      'SELECT identity_name, bound_at, source FROM wrapper_identity WHERE wrapper_pid = ?'
+    ).get(wrapperPid) as any;
+    if (!row) return null;
+    return { identityName: row.identity_name, boundAt: row.bound_at, source: row.source };
+  }
+
+  /** Upsert the wrapper -> identity binding. */
+  setWrapperBinding(wrapperPid: number, identityName: string, opts: { cwd?: string; source?: string } = {}): void {
+    if (!Number.isFinite(wrapperPid) || wrapperPid <= 0) return;
+    const now = Date.now();
+    this.db.prepare(`
+      INSERT INTO wrapper_identity (wrapper_pid, identity_name, bound_at, cwd, source)
+      VALUES (?, ?, ?, ?, ?)
+      ON CONFLICT(wrapper_pid) DO UPDATE SET
+        identity_name = excluded.identity_name,
+        bound_at = excluded.bound_at,
+        cwd = excluded.cwd,
+        source = excluded.source
+    `).run(wrapperPid, identityName, now, opts.cwd ?? null, opts.source ?? 'mint');
+  }
+
+  /**
+   * Resolve the active identity for a caller, minting sequentially if needed.
+   *
+   * Precedence (matches rebirth-mcp's resolveOrMintIdentity contract, but
+   * sourced from the home DB instead of filesystem sidecars):
+   *   1. `envIdentity` (from process.env.CLAUDE_IDENTITY) — explicit user choice
+   *   2. `wrapper_identity` row for `wrapperPid` — sticky across respawns
+   *      within a single brain-claude wrapper
+   *   3. Mint a new `claude-NN` sequential name
+   *
+   * Side effects:
+   *   - Creates `identity_profiles` row when minting (or attaching a fresh env name).
+   *   - Upserts `wrapper_identity` row when wrapperPid is provided.
+   *   - Binds `session_identity` row when sessionId is provided.
+   *   - Appends a chain event: 'mint' for first-time, 'spawn' for env attach,
+   *     'rebirth' for sticky-binding rejoin.
+   *
+   * Returns the resolved name + flags describing how it was resolved.
+   */
+  resolveOrMintIdentity(opts: {
+    envIdentity?: string;
+    wrapperPid?: number;
+    sessionId?: string;
+    cwd?: string;
+  }): { name: string; minted: boolean; fromEnv: boolean; fromWrapper: boolean } {
+    const wrapperPid = opts.wrapperPid && opts.wrapperPid > 0 ? opts.wrapperPid : undefined;
+    const envName = opts.envIdentity?.trim();
+
+    // 1. Env wins.
+    if (envName && isValidIdentityName(envName)) {
+      this.ensureProfile(envName);
+      if (wrapperPid) this.setWrapperBinding(wrapperPid, envName, { cwd: opts.cwd, source: 'env' });
+      this.bindAndChain(envName, opts.sessionId, opts.cwd, wrapperPid, 'spawn');
+      return { name: envName, minted: false, fromEnv: true, fromWrapper: false };
+    }
+
+    // 2. Existing wrapper binding (sticky across respawns).
+    if (wrapperPid) {
+      const bound = this.getWrapperBinding(wrapperPid);
+      if (bound && this.exists(bound.identityName)) {
+        this.bindAndChain(bound.identityName, opts.sessionId, opts.cwd, wrapperPid, 'rebirth');
+        return { name: bound.identityName, minted: false, fromEnv: false, fromWrapper: true };
+      }
+    }
+
+    // 3. Mint sequential.
+    const name = this.mintNextSequentialName();
+    this.create(name, { blurb: '' });
+    if (wrapperPid) this.setWrapperBinding(wrapperPid, name, { cwd: opts.cwd, source: 'mint' });
+    this.appendChainEvent({
+      identityName: name,
+      eventKind: 'mint',
+      sessionId: opts.sessionId,
+      cwd: opts.cwd,
+      wrapperPid,
+      metaJson: JSON.stringify({ note: 'auto-minted on first tool call (no CLAUDE_IDENTITY, no prior wrapper binding)' }),
+    });
+    this.bindAndChain(name, opts.sessionId, opts.cwd, wrapperPid, 'spawn');
+    return { name, minted: true, fromEnv: false, fromWrapper: false };
+  }
+
+  /** Idempotently ensure a profile row exists. */
+  private ensureProfile(name: string): void {
+    if (this.exists(name)) return;
+    this.create(name, { blurb: '' });
+  }
+
+  /** Bind a session and append a chain event in one shot, both idempotent-ish. */
+  private bindAndChain(
+    identityName: string,
+    sessionId: string | undefined,
+    cwd: string | undefined,
+    wrapperPid: number | undefined,
+    eventKind: 'spawn' | 'rebirth',
+  ): void {
+    if (sessionId) {
+      const existing = this.getSessionBinding(sessionId);
+      if (existing?.identityName === identityName) return; // already bound, skip duplicate chain noise
+      this.bindSession(sessionId, identityName, eventKind);
+    }
+    this.appendChainEvent({
+      identityName,
+      eventKind,
+      sessionId,
+      cwd,
+      wrapperPid,
+    });
+  }
 
   /** Bind a session to an identity. */
   bindSession(sessionId: string, identityName: string, source: string): void {

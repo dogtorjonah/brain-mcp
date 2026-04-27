@@ -5,7 +5,6 @@ import { openAtlasDatabase, type AtlasDatabase } from '../atlas/db.js';
 import {
   discoverAllRoots,
   normalizeCurrentWorkspaceAlias,
-  preferredAtlasDbPath,
   resolveExistingAtlasDbPath,
 } from './workspaceLocator.js';
 
@@ -130,6 +129,3 @@ export function resolveWorkspaceDb(
   };
 }
 
-export function getWritableAtlasPathForRoot(sourceRoot: string): string {
-  return resolveExistingAtlasDbPath(sourceRoot)?.dbPath ?? preferredAtlasDbPath(sourceRoot);
-}

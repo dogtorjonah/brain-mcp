@@ -145,6 +145,49 @@ export interface AtlasDbOptions {
   migrationDir: string;
   sqliteVecExtension?: string;
   embeddingDimensions?: number;
+  /**
+   * If false (default), `openAtlasDatabase` throws `AtlasNotInitializedError`
+   * when the file does not yet exist. Set true only from the explicit init/reset
+   * paths so other tool calls can't silently scaffold a DB in the wrong cwd.
+   */
+  allowCreate?: boolean;
+  /**
+   * Source root for stamping the brain-mcp owner marker on first creation.
+   * Defaults to dirname(dirname(dbPath)) (i.e. the repo root above `.brain/`).
+   */
+  sourceRoot?: string;
+  /**
+   * Forcibly claim an existing un-marked DB as brain-mcp's. Used by
+   * `atlas_admin action=init force=true` to adopt legacy DBs.
+   */
+  forceClaim?: boolean;
+}
+
+export const ATLAS_OWNER_MARKER_WORKSPACE = '__brain_mcp_owner__';
+export const ATLAS_OWNER_PROVIDER = 'brain-mcp';
+
+export class AtlasNotInitializedError extends Error {
+  constructor(public readonly dbPath: string) {
+    super(
+      `Atlas not initialized at ${dbPath}. ` +
+      `Run \`atlas_admin action=init confirm=true\` to bootstrap a fresh atlas for this workspace.`,
+    );
+    this.name = 'AtlasNotInitializedError';
+  }
+}
+
+export class ForeignAtlasError extends Error {
+  constructor(public readonly dbPath: string, public readonly foreignProvider: string | null) {
+    const reason = foreignProvider
+      ? `it is owned by provider="${foreignProvider}"`
+      : `it has data but no brain-mcp owner marker`;
+    super(
+      `Refusing to open atlas DB at ${dbPath}: ${reason}. ` +
+      `Either move the foreign DB out of the way, or run ` +
+      `\`atlas_admin action=init force=true confirm=true\` to claim it.`,
+    );
+    this.name = 'ForeignAtlasError';
+  }
 }
 
 export interface AtlasImportEdgeRecord {
@@ -333,6 +376,10 @@ function shouldAutoBackup(dbPath: string): boolean {
 }
 
 export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
+  const dbExisted = fs.existsSync(options.dbPath);
+  if (!dbExisted && !options.allowCreate) {
+    throw new AtlasNotInitializedError(options.dbPath);
+  }
   ensureDirectory(options.dbPath);
   const embeddingDimensions = resolveEmbeddingDimensions(options.embeddingDimensions);
 
@@ -426,7 +473,110 @@ export function openAtlasDatabase(options: AtlasDbOptions): AtlasDatabase {
 
   backfillSymbolsAndReferencesFromAtlasFiles(db);
 
+  // Owner marker — refuse to operate on a DB owned by something else.
+  // Empty DBs (just-created or legacy brain-mcp DBs with no data) are claimed
+  // automatically. Non-empty unmarked DBs require force=true via init.
+  const sourceRoot = options.sourceRoot ?? path.dirname(path.dirname(options.dbPath));
+  try {
+    verifyOrStampOwner(db, options.dbPath, sourceRoot, {
+      allowClaim: options.forceClaim === true,
+    });
+  } catch (err) {
+    db.close();
+    throw err;
+  }
+
   return db;
+}
+
+function readOwnerMarkerRow(db: AtlasDatabase): { provider: string | null } | null {
+  try {
+    const row = db
+      .prepare('SELECT provider FROM atlas_meta WHERE workspace = ?')
+      .get(ATLAS_OWNER_MARKER_WORKSPACE) as { provider: string | null } | undefined;
+    return row ?? null;
+  } catch {
+    return null;
+  }
+}
+
+function isAtlasEmpty(db: AtlasDatabase): boolean {
+  const tables = ['atlas_files', 'atlas_meta', 'atlas_changelog'] as const;
+  try {
+    for (const table of tables) {
+      const row = db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as { n: number };
+      if (row.n > 0) return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function stampBrainMcpOwner(db: AtlasDatabase, sourceRoot: string): void {
+  db.prepare(
+    `INSERT INTO atlas_meta (workspace, source_root, provider, provider_config, brain_version, updated_at)
+     VALUES (?, ?, ?, '{}', NULL, CURRENT_TIMESTAMP)
+     ON CONFLICT(workspace) DO UPDATE SET
+       source_root = excluded.source_root,
+       provider = excluded.provider,
+       updated_at = CURRENT_TIMESTAMP`,
+  ).run(ATLAS_OWNER_MARKER_WORKSPACE, sourceRoot, ATLAS_OWNER_PROVIDER);
+}
+
+export type AtlasOwnershipState =
+  | { kind: 'missing' }
+  | { kind: 'fresh' }
+  | { kind: 'brain_mcp'; hasData: boolean }
+  | { kind: 'foreign'; provider: string | null };
+
+/**
+ * Read-only peek at a DB file to classify its ownership without going through
+ * the migration / claim path. Used by cross-workspace handlers that need to
+ * decide whether to refuse or proceed before opening the DB for writes.
+ */
+export function inspectAtlasOwnership(dbPath: string): AtlasOwnershipState {
+  if (!fs.existsSync(dbPath)) return { kind: 'missing' };
+  let probe: AtlasDatabase | null = null;
+  try {
+    probe = new Database(dbPath, { readonly: true }) as unknown as AtlasDatabase;
+    const marker = readOwnerMarkerRow(probe);
+    if (marker) {
+      if (marker.provider === ATLAS_OWNER_PROVIDER) {
+        const hasData = !isAtlasEmpty(probe);
+        return { kind: 'brain_mcp', hasData };
+      }
+      return { kind: 'foreign', provider: marker.provider };
+    }
+    return isAtlasEmpty(probe) ? { kind: 'fresh' } : { kind: 'foreign', provider: null };
+  } catch {
+    return { kind: 'foreign', provider: null };
+  } finally {
+    probe?.close();
+  }
+}
+
+/**
+ * Returns true if the DB has the brain-mcp owner marker (or just got stamped).
+ * Throws ForeignAtlasError if the DB is owned by something else, or has data
+ * with no marker and `allowClaim` is false.
+ */
+export function verifyOrStampOwner(
+  db: AtlasDatabase,
+  dbPath: string,
+  sourceRoot: string,
+  options: { allowClaim?: boolean } = {},
+): void {
+  const marker = readOwnerMarkerRow(db);
+  if (marker) {
+    if (marker.provider === ATLAS_OWNER_PROVIDER) return;
+    throw new ForeignAtlasError(dbPath, marker.provider);
+  }
+  if (options.allowClaim || isAtlasEmpty(db)) {
+    stampBrainMcpOwner(db, sourceRoot);
+    return;
+  }
+  throw new ForeignAtlasError(dbPath, null);
 }
 
 // ---------------------------------------------------------------------------
@@ -527,7 +677,7 @@ export function resetAtlasDatabase(options: AtlasDbOptions, currentDb?: AtlasDat
   }
 
   deleteAtlasDatabaseFiles(options.dbPath);
-  return openAtlasDatabase(options);
+  return openAtlasDatabase({ ...options, allowCreate: true, forceClaim: true });
 }
 
 function parseJson<T>(value: unknown, fallback: T): T {

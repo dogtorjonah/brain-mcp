@@ -42,6 +42,10 @@ export function resolveExistingAtlasDbPath(sourceRoot: string): { dbPath: string
   return null;
 }
 
+export function getWritableAtlasPathForRoot(sourceRoot: string): string {
+  return resolveExistingAtlasDbPath(sourceRoot)?.dbPath ?? preferredAtlasDbPath(sourceRoot);
+}
+
 export function normalizeCurrentWorkspaceAlias(
   sourceRoot: string,
   runtimeWorkspace: string,

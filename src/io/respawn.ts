@@ -39,6 +39,7 @@ export interface WriteRespawnInput {
   metadata?: {
     effort?: string;
     model?: string;
+    identity?: string;
   };
 }
 
@@ -69,6 +70,7 @@ export function writeRespawnSentinel(input: WriteRespawnInput): RespawnWriteResu
   const metaLines: string[] = [];
   if (input.metadata?.effort) metaLines.push(`effort=${input.metadata.effort}`);
   if (input.metadata?.model) metaLines.push(`model=${input.metadata.model}`);
+  if (input.metadata?.identity) metaLines.push(`identity=${input.metadata.identity}`);
 
   let metaPath: string | undefined;
   if (metaLines.length > 0) {

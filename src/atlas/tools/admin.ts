@@ -19,7 +19,7 @@ import fs from 'node:fs';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
-import { backupAtlasDatabase, resetAtlasDatabase } from '../db.js';
+import { backupAtlasDatabase, inspectAtlasOwnership, resetAtlasDatabase } from '../db.js';
 import { ATLAS_MIGRATION_DIR } from '../migrationDir.js';
 import { toolWithDescription } from './helpers.js';
 import {
@@ -46,7 +46,7 @@ import {
 // ============================================================================
 
 interface AdminArgs {
-  action: 'init' | 'reindex' | 'bridge_list' | 'merge';
+  action: 'init' | 'reset' | 'reindex' | 'bridge_list' | 'merge';
   files?: string[];
   workspace?: string;
   sourceRoot?: string;
@@ -54,6 +54,31 @@ interface AdminArgs {
   phase?: 'crossref';
   /** Source Atlas to merge FROM — worktree ID (e.g. "TABNDPgU1Ne8"), branch ("evolve/TABNDPgU1Ne8"), or absolute DB path. */
   source?: string;
+  /** For init: forcibly claim an existing un-marked DB as brain-mcp's. */
+  force?: boolean;
+}
+
+/**
+ * True if the runtime's DB has no real workspace data yet — only the brain-mcp
+ * owner marker row in atlas_meta and zero rows everywhere else.
+ */
+function isAtlasFresh(db: import('../db.js').AtlasDatabase): boolean {
+  try {
+    const tables: Array<[string, string]> = [
+      ['atlas_files', 'SELECT COUNT(*) AS n FROM atlas_files'],
+      ['atlas_changelog', 'SELECT COUNT(*) AS n FROM atlas_changelog'],
+    ];
+    for (const [, sql] of tables) {
+      const row = db.prepare(sql).get() as { n: number };
+      if (row.n > 0) return false;
+    }
+    const metaRow = db
+      .prepare("SELECT COUNT(*) AS n FROM atlas_meta WHERE workspace != '__brain_mcp_owner__'")
+      .get() as { n: number };
+    return metaRow.n === 0;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -120,6 +145,7 @@ async function handleInit(
   workspace?: string,
   sourceRoot?: string,
   confirm?: boolean,
+  force?: boolean,
 ): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
   const targetWorkspace = workspace ?? runtime.config.workspace;
   const isCrossWorkspace = sourceRoot !== undefined || targetWorkspace !== runtime.config.workspace;
@@ -132,7 +158,45 @@ async function handleInit(
     }
     const target = resolved.target;
     const resolvedWorkspace = target.workspace;
-    const isBootstrap = !target.indexed;
+
+    // Classify the target DB before deciding what init means here.
+    // - missing / fresh → bootstrap (create + stamp marker)
+    // - brain_mcp + no data → bootstrap (idempotent re-run)
+    // - brain_mcp + has data → refuse, direct to reset
+    // - foreign → refuse unless force=true (then it's a claim-and-rebuild)
+    const ownership = inspectAtlasOwnership(target.dbPath);
+    if (ownership.kind === 'foreign' && !force) {
+      const who = ownership.provider
+        ? `provider="${ownership.provider}"`
+        : 'no brain-mcp owner marker';
+      return {
+        content: [{
+          type: 'text',
+          text: [
+            `Refusing to init at ${target.dbPath}: existing DB has ${who} and is not empty.`,
+            '',
+            'If you intend to claim this DB and rebuild it as brain-mcp, re-run with',
+            '  force=true confirm=true',
+            '(a backup will be saved to .brain/backups/ before the rebuild).',
+          ].join('\n'),
+        }],
+      };
+    }
+    if (ownership.kind === 'brain_mcp' && ownership.hasData) {
+      return {
+        content: [{
+          type: 'text',
+          text: [
+            `Atlas at ${target.dbPath} already contains data for workspace "${resolvedWorkspace}".`,
+            '',
+            'init only bootstraps fresh atlases. To rebuild an existing one from scratch use:',
+            '  atlas_admin action=reset confirm=true',
+            '(local reset only — for cross-workspace destructive rebuild, run init with force=true).',
+          ].join('\n'),
+        }],
+      };
+    }
+    const isBootstrap = ownership.kind !== 'foreign';
 
     if (!confirm) {
       const headline = isBootstrap
@@ -205,12 +269,62 @@ async function handleInit(
   }
 
   // ── Local init ──
+  // After the daemon's open gate, the DB always exists by the time we reach
+  // this handler. If it's fresh (just stamped marker, no data) → bootstrap
+  // path: confirm to start the reindex. If it already has data → refuse and
+  // direct the caller to `action=reset` so the destroy is explicit.
+  if (!isAtlasFresh(runtime.db)) {
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          `Atlas at ${runtime.config.dbPath} already contains data for workspace "${runtime.config.workspace}".`,
+          '',
+          'init only bootstraps a fresh atlas. To rebuild an existing one from scratch use:',
+          '  atlas_admin action=reset confirm=true',
+          '(reset auto-backs up to .brain/backups/ before wiping.)',
+        ].join('\n'),
+      }],
+    };
+  }
+
   if (!confirm) {
     return {
       content: [{
         type: 'text',
         text: [
-          '⚠️  atlas_admin(action=init) will **destroy** the current atlas database and rebuild from scratch.',
+          `🌱 atlas_admin(action=init) will **bootstrap** a fresh atlas for workspace "${runtime.config.workspace}".`,
+          '',
+          `  Workspace: ${runtime.config.workspace}`,
+          `  Database:  ${runtime.config.dbPath}`,
+          '',
+          'No existing atlas data will be touched. The full extraction pipeline will run',
+          '(structure → flow → crossref → cluster). Call with confirm=true to proceed.',
+        ].join('\n'),
+      }],
+    };
+  }
+
+  const reindexResult = await runReindexTool(runtime, { confirm: true });
+  const reindexText = reindexResult.content.map((c) => c.text).join('\n');
+  return {
+    content: [
+      { type: 'text', text: `🌱 Fresh atlas created for workspace "${runtime.config.workspace}".\n\n${reindexText}` },
+      { type: 'text', text: `💡 Query it via \`atlas_query action=search workspace=${runtime.config.workspace}\`.` },
+    ],
+  };
+}
+
+async function handleReset(
+  runtime: AtlasRuntime,
+  confirm?: boolean,
+): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
+  if (!confirm) {
+    return {
+      content: [{
+        type: 'text',
+        text: [
+          '⚠️  atlas_admin(action=reset) will **destroy** the current atlas database and rebuild from scratch.',
           '',
           `  Workspace: ${runtime.config.workspace}`,
           `  Database:  ${runtime.config.dbPath}`,
@@ -223,21 +337,19 @@ async function handleInit(
     };
   }
 
-  // Nuke and reopen (resetAtlasDatabase auto-backs up first)
   const freshDb = resetAtlasDatabase(
     {
       dbPath: runtime.config.dbPath,
       migrationDir: ATLAS_MIGRATION_DIR,
       sqliteVecExtension: runtime.config.sqliteVecExtension,
       embeddingDimensions: runtime.config.embeddingDimensions,
+      sourceRoot: runtime.config.sourceRoot,
     },
     runtime.db,
   );
 
-  // Swap the live db handle so the rest of the server uses the fresh database
   (runtime as { db: typeof freshDb }).db = freshDb;
 
-  // Kick off full reindex
   const reindexResult = await runReindexTool(runtime, { confirm: true });
   const reindexText = reindexResult.content.map((c) => c.text).join('\n');
 
@@ -390,25 +502,28 @@ export function registerAdminTool(server: McpServer, runtime: AtlasRuntime): voi
     [
       'Strategic operations tool for Atlas maintenance, refresh, and workspace discovery.',
       'Use atlas_admin when the Atlas itself needs to be updated or inspected, not when you want code answers from the Atlas.',
-      'Actions: init destroys the database and rebuilds from scratch (requires confirm=true, auto-backs up to .brain/backups/ before destruction) — or bootstraps a brand-new atlas for any local git repo that does not yet have one; reindex reruns extraction work and is the main way to refresh Atlas state after code changes; bridge_list discovers every local Atlas workspace AND every indexable git repo on the machine; merge ports atlas_files metadata and atlas_changelog entries from a worktree or external Atlas database into the local Atlas — use after merging a git worktree branch to bring agent-authored Atlas commits along.',
+      'Actions: init bootstraps a fresh atlas for a workspace that has no atlas yet (refuses if data already exists — use reset for that); reset destroys the existing database and rebuilds from scratch (requires confirm=true, auto-backs up to .brain/backups/); reindex reruns extraction work and is the main way to refresh Atlas state after code changes; bridge_list discovers every local Atlas workspace AND every indexable git repo on the machine; merge ports atlas_files metadata and atlas_changelog entries from a worktree or external Atlas database into the local Atlas — use after merging a git worktree branch to bring agent-authored Atlas commits along.',
       'Fresh-index bootstrap: `atlas_admin action=init workspace=<name> confirm=true` works for any git repo next to the current source root or inside $HOME, even without an existing .brain/ directory. For repos outside those dirs, pass `sourceRoot=/abs/path/to/repo`. A new `.brain/atlas.sqlite` is created and the full pipeline runs (structure → flow → crossref → cluster). No existing data is touched when bootstrapping.',
       'Merge workflow: after `git merge <worktree-branch>`, run `atlas_admin action=merge source=<worktree-id>` to preview, then `atlas_admin action=merge source=<worktree-id> confirm=true` to apply. Omit `source` to list available worktree Atlas databases. The merge inserts new atlas_files records, updates existing records with richer metadata from the source, and ports missing atlas_changelog entries (deduped by file_path + summary + created_at). A backup is created automatically before applying.',
       'Workflow hints: prefer reindex over init — init destroys all changelog history and agent metadata; use reindex with no args first to inspect status before starting work; use files=[...] for targeted refreshes after touching a few files; use confirm=true only when you actually want to launch a broader run; use phase="crossref" for cross-reference-only refreshes when structural passes are already current; use bridge_list before querying another workspace so you see what is indexed AND what is indexable; use merge after merging a git worktree branch to port the worktree Atlas data into the local Atlas without manual SQL surgery.',
       'The refreshed pipeline now feeds richer outputs, including AST-verified structural edges, deterministic flow analysis, heuristic crossref cross-references, and Leiden community clusters, so admin actions directly control the quality and freshness of those higher-value results.',
     ].join('\n'),
     {
-      action: z.enum(['init', 'reindex', 'bridge_list', 'merge']),
+      action: z.enum(['init', 'reset', 'reindex', 'bridge_list', 'merge']),
       files: z.array(z.string().min(1)).optional().describe('File paths to re-extract (reindex action)'),
       workspace: z.string().optional().describe('Target workspace (defaults to current). For init, can name an indexed workspace, an indexable git repo, or an arbitrary slug when paired with sourceRoot.'),
       sourceRoot: z.string().optional().describe('Absolute path to a git repo to init (escape hatch for repos outside the auto-scanned dirs). When omitted, init resolves the workspace by name via discoverAllRoots.'),
-      confirm: coercedOptionalBoolean.describe('Confirm destructive or write actions (init, reindex, merge). Default: dry-run / preview'),
+      confirm: coercedOptionalBoolean.describe('Confirm destructive or write actions (init, reset, reindex, merge). Default: dry-run / preview'),
       phase: z.enum(['crossref']).optional().describe('Limit reindex to crossref phase only'),
       source: z.string().optional().describe('Source Atlas to merge from — worktree ID (e.g. "TABNDPgU1Ne8"), branch name ("evolve/TABNDPgU1Ne8"), or absolute path to an atlas.sqlite file. Omit to list available worktree Atlases.'),
+      force: coercedOptionalBoolean.describe('For init: claim an existing un-marked atlas DB as brain-mcp\'s. Use only when adopting a legacy DB you trust.'),
     },
     async (args: AdminArgs) => {
       switch (args.action) {
         case 'init':
-          return handleInit(runtime, args.workspace, args.sourceRoot, args.confirm);
+          return handleInit(runtime, args.workspace, args.sourceRoot, args.confirm, args.force);
+        case 'reset':
+          return handleReset(runtime, args.confirm);
         case 'reindex':
           return runReindexTool(runtime, {
             files: args.files,
@@ -424,7 +539,7 @@ export function registerAdminTool(server: McpServer, runtime: AtlasRuntime): voi
           return {
             content: [{
               type: 'text',
-              text: `Unknown atlas_admin action: ${String((args as { action: string }).action)}. Valid: init, reindex, bridge_list, merge.`,
+              text: `Unknown atlas_admin action: ${String((args as { action: string }).action)}. Valid: init, reset, reindex, bridge_list, merge.`,
             }],
           };
       }

@@ -32,10 +32,19 @@ if [[ -n "$identity_flag" && -n "$new_identity_flag" ]]; then
   exit 2
 fi
 
+# Sidecar identity file — written by brain_respawn (or rebirth-mcp) to
+# survive across wrapper relaunches. Per-wrapper-PID so sibling terminals
+# don't cross-fire. Read at startup (cold) and again each respawn loop
+# (mid-flight identity swap via /identity or "respawn as <name>").
+assignment_dir="${HOME:-/tmp}/.claude/.brain-identity"
+assignment_file="$assignment_dir/$$.assigned"
+
 if [[ -n "$new_identity_flag" ]]; then
   CLAUDE_IDENTITY="$new_identity_flag"
 elif [[ -n "$identity_flag" ]]; then
   CLAUDE_IDENTITY="$identity_flag"
+elif [[ -z "${CLAUDE_IDENTITY:-}" && -f "$assignment_file" ]]; then
+  CLAUDE_IDENTITY="$(head -n 1 "$assignment_file" 2>/dev/null | tr -d '[:space:]')"
 fi
 
 if [[ -n "${CLAUDE_IDENTITY:-}" ]]; then
@@ -45,6 +54,8 @@ if [[ -n "${CLAUDE_IDENTITY:-}" ]]; then
       exit 2 ;;
   esac
   export CLAUDE_IDENTITY
+  mkdir -p "$assignment_dir" 2>/dev/null || true
+  printf '%s\n' "$CLAUDE_IDENTITY" > "$assignment_file" 2>/dev/null || true
   echo "[brain-claude] identity: $CLAUDE_IDENTITY" >&2
 else
   echo "[brain-claude] identity: <unassigned>" >&2
@@ -110,9 +121,35 @@ while :; do
               echo "[brain-claude] warn: ignoring malformed model=$model_name in sidecar" >&2
             fi
             ;;
+          identity=*)
+            requested_identity="${line#identity=}"
+            case "$requested_identity" in
+              .|..|*/*|*$'\n'*|"")
+                echo "[brain-claude] warn: ignoring invalid identity=$requested_identity in sidecar" >&2
+                ;;
+              *)
+                CLAUDE_IDENTITY="$requested_identity"
+                export CLAUDE_IDENTITY
+                mkdir -p "$assignment_dir" 2>/dev/null || true
+                printf '%s\n' "$CLAUDE_IDENTITY" > "$assignment_file" 2>/dev/null || true
+                ;;
+            esac
+            ;;
         esac
       done < "$meta"
       rm -f "$meta"
+    fi
+
+    # Refresh identity from sidecar each loop — covers the case where the
+    # MCP tool updated the assignment file between the prior claude exit
+    # and this relaunch (e.g. /identity NAME during the prior session).
+    if [[ -f "$assignment_file" ]]; then
+      current_assigned="$(head -n 1 "$assignment_file" 2>/dev/null | tr -d '[:space:]')"
+      if [[ -n "$current_assigned" && "$current_assigned" != "${CLAUDE_IDENTITY:-}" ]]; then
+        CLAUDE_IDENTITY="$current_assigned"
+        export CLAUDE_IDENTITY
+        echo "[brain-claude] identity (sidecar): $CLAUDE_IDENTITY" >&2
+      fi
     fi
 
     if [[ -n "$handoff_path" && -f "$handoff_path" ]]; then
@@ -135,5 +172,10 @@ while :; do
     break
   fi
 done
+
+# Clean exit: drop the per-PID identity sidecar so a recycled PID doesn't
+# inherit a stale assignment. Respawns exit via the loop continuing, not
+# this break — so the sidecar only goes away on a real /exit or ctrl-d.
+rm -f "$assignment_file" 2>/dev/null || true
 
 exit "$last_rc"

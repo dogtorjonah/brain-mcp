@@ -9,7 +9,7 @@
     "brain-mcp": "./dist/bin/brain-mcp.js",
     "brain-daemon": "./dist/bin/brain-daemon.js",
     "brain-claude": "./bin/brain-claude",
-    "brain": "./dist/cli/migrate.js"
+    "brain": "./dist/cli/brain.js"
   },
   "files": [
     "dist",
@@ -19,11 +19,13 @@
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "postbuild": "chmod +x dist/bin/brain-mcp.js dist/bin/brain-daemon.js dist/cli/brain.js dist/cli/migrate.js",
     "check": "tsc -p tsconfig.json --noEmit",
     "dev": "tsx watch src/bin/brain-mcp.ts",
     "dev:daemon": "tsx watch src/bin/brain-daemon.ts",
     "start": "node dist/bin/brain-mcp.js",
-    "start:daemon": "node dist/bin/brain-daemon.js"
+    "start:daemon": "node dist/bin/brain-daemon.js",
+    "prepare": "npm run build"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",

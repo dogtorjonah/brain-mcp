@@ -41,7 +41,6 @@ export function registerSopPromoteTool(server: McpServer, deps: PromoteToolDeps)
       const args = rawArgs as { candidate_id: number; title: string; body?: string };
 
       const { db } = deps;
-      const session = deps.getCurrentSession();
 
       // Look up the candidate
       const candidate = db.prepare(
@@ -91,13 +90,13 @@ export function registerSopPromoteTool(server: McpServer, deps: PromoteToolDeps)
       // Insert into identity_sops
       const now = Date.now();
       const insertResult = db.prepare(
-        `INSERT INTO identity_sops (identity_name, title, body, created_ms, updated_ms, created_by_session)
+        `INSERT INTO identity_sops (identity_name, title, body, created_at, updated_at, promoted_from_candidate)
          VALUES (?, ?, ?, ?, ?, ?)`,
-      ).run(candidate.identity_name, args.title.trim(), fullBody, now, now, session);
+      ).run(candidate.identity_name, args.title.trim(), fullBody, now, now, args.candidate_id);
 
       const sopId = Number(insertResult.lastInsertRowid);
 
-      // Link the candidate to the promoted SOP
+      // Link the candidate to the promoted SOP (forward-link; back-link lives on identity_sops.promoted_from_candidate)
       db.prepare('UPDATE sop_candidates SET promoted_sop_id = ? WHERE id = ?').run(sopId, args.candidate_id);
 
       const lines = [

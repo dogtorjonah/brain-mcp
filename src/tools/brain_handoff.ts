@@ -6,6 +6,7 @@ import { getCallerContext } from '../daemon/requestContext.js';
 import type { AtlasToolPool } from '../daemon/atlasToolPool.js';
 import type { HomeDb } from '../home/db.js';
 import type { IdentityStore } from '../identity/store.js';
+import { getLifetimeChangelogDigest } from '../atlas/lifetimeDigest.js';
 import {
   extractPredecessorFromTranscript,
   readChainLink,
@@ -92,10 +93,72 @@ async function handleBrainHandoff(
   caller: CallerContext | undefined,
   deps: BrainHandoffDeps,
 ) {
+  const built = await buildRichHandoff(args, caller, deps);
+  if (!built.ok) {
+    return {
+      content: [{ type: 'text', text: built.reason }],
+      isError: true,
+    };
+  }
+
+  const format = args.format ?? 'both';
+  const structuredContent = {
+    ...built.structured,
+    markdown: format === 'json' ? undefined : built.markdown,
+  };
+
+  const text = format === 'json'
+    ? safeJsonStringify(structuredContent)
+    : format === 'markdown'
+      ? built.markdown
+      : safeJsonStringify(structuredContent);
+
+  return {
+    content: [{ type: 'text', text }],
+    structuredContent,
+  };
+}
+
+/**
+ * Result of {@link buildRichHandoff}. The `ok: false` branch carries a human
+ * reason (used as both the error message in `brain_handoff` and the signal to
+ * `brain_respawn` that it should fall back to the sparse builder).
+ */
+export type RichHandoffResult =
+  | {
+      ok: true;
+      markdown: string;
+      structured: {
+        kind: 'brain_handoff';
+        session_id: string;
+        transcript_path: string;
+        cwd: string;
+        identity: string;
+        stats: Record<string, unknown>;
+        identity_snapshot: ReturnType<typeof buildIdentitySnapshot>;
+        atlas_inlay: AtlasInlayEntry[];
+        lifetime_changelog_arc: string | null;
+      };
+    }
+  | { ok: false; reason: string };
+
+/**
+ * Build the full rich-handoff markdown plus structured snapshot, exactly as
+ * `brain_handoff` would emit it. Factored out so `brain_respawn` can dump the
+ * rich content into the wrapper handoff file instead of the sparse fallback.
+ *
+ * Returns `{ ok: false }` when no transcript can be found for the cwd — caller
+ * should fall back to the sparse handoff (no transcript ⇒ no narrative content
+ * worth dumping anyway).
+ */
+export async function buildRichHandoff(
+  args: BrainHandoffArgs,
+  caller: CallerContext | undefined,
+  deps: BrainHandoffDeps,
+): Promise<RichHandoffResult> {
   const cwd = args.cwd ?? caller?.cwd ?? process.cwd();
   const identityName = args.identity ?? deps.getCurrentIdentity() ?? caller?.identity ?? 'unknown';
   const sessionId = args.session_id ?? deps.getCurrentSessionId() ?? caller?.sessionId;
-  const format = args.format ?? 'both';
 
   const transcript = args.transcript_path
     ? {
@@ -108,15 +171,32 @@ async function handleBrainHandoff(
       : newestTranscriptForCwd(cwd);
 
   if (!transcript) {
-    return {
-      content: [{ type: 'text', text: `No Claude transcript found for cwd ${cwd}.` }],
-      isError: true,
-    };
+    return { ok: false, reason: `No Claude transcript found for cwd ${cwd}.` };
   }
 
   backfillChainLinkFromTranscript(transcript, cwd);
   if (caller?.sessionId && caller.sessionId !== transcript.sessionId) {
     writeChainLink(caller.sessionId, transcript.sessionId, cwd);
+  }
+
+  // Identity-based bridge: when the resolved transcript has no chain link
+  // (fresh session, never been a respawn target), but the active identity
+  // has prior sessions, write a synthetic link so walkChainBack reaches
+  // back into the identity's lineage. Covers the `/identity attach` and
+  // `respawn as <identity>` flows where the new session has no turn-0
+  // [CONTEXT REBIRTH] header to extract a predecessor from.
+  if (
+    identityName &&
+    identityName !== 'unknown' &&
+    !readChainLink(transcript.sessionId)
+  ) {
+    const identityPrev = deps.identityStore.findLastSessionForIdentity(
+      identityName,
+      transcript.sessionId,
+    );
+    if (identityPrev) {
+      writeChainLink(transcript.sessionId, identityPrev, cwd);
+    }
   }
 
   const chainTranscripts = resolveTranscriptChain(cwd, transcript);
@@ -151,35 +231,32 @@ async function handleBrainHandoff(
     ? []
     : await buildAtlasInlay(deps, caller, reduced, cwd, args.max_atlas_files ?? 6);
 
-  const markdown = atlasInlay.length > 0
-    ? `${built.markdown}\n${renderAtlasInlay(atlasInlay)}`
-    : built.markdown;
+  const lifetimeArc = buildLifetimeArc(deps, identityName, cwd, reduced);
 
-  const structuredContent = {
-    kind: 'brain_handoff',
-    session_id: transcript.sessionId,
-    transcript_path: transcript.path,
-    cwd,
-    identity: identityName,
-    stats: {
-      ...built.stats,
-      markdown_bytes: Buffer.byteLength(markdown, 'utf8'),
-      indexed,
-    },
-    identity_snapshot: identitySnapshot,
-    atlas_inlay: atlasInlay,
-    markdown: format === 'json' ? undefined : markdown,
-  };
-
-  const text = format === 'json'
-    ? safeJsonStringify(structuredContent)
-    : format === 'markdown'
-      ? markdown
-      : safeJsonStringify(structuredContent);
+  const markdown = [
+    built.markdown,
+    atlasInlay.length > 0 ? renderAtlasInlay(atlasInlay) : '',
+    lifetimeArc ? renderLifetimeArc(lifetimeArc) : '',
+  ].filter(Boolean).join('\n');
 
   return {
-    content: [{ type: 'text', text }],
-    structuredContent,
+    ok: true,
+    markdown,
+    structured: {
+      kind: 'brain_handoff',
+      session_id: transcript.sessionId,
+      transcript_path: transcript.path,
+      cwd,
+      identity: identityName,
+      stats: {
+        ...built.stats,
+        markdown_bytes: Buffer.byteLength(markdown, 'utf8'),
+        indexed,
+      },
+      identity_snapshot: identitySnapshot,
+      atlas_inlay: atlasInlay,
+      lifetime_changelog_arc: lifetimeArc ?? null,
+    },
   };
 }
 
@@ -339,6 +416,35 @@ function renderAtlasInlay(entries: AtlasInlayEntry[]): string {
     lines.push(entry.atlas_context, '');
   }
   return lines.join('\n');
+}
+
+function buildLifetimeArc(
+  deps: BrainHandoffDeps,
+  identityName: string,
+  cwd: string,
+  reduced: ReturnType<typeof reduceTranscript>,
+): string | null {
+  if (!identityName || identityName === 'unknown') return null;
+
+  const sessionIds = deps.homeDb.db
+    .prepare('SELECT session_id FROM session_identity WHERE identity_name = ?')
+    .all(identityName) as Array<{ session_id: string }>;
+  const instanceIds = sessionIds.map((row) => row.session_id).filter(Boolean);
+
+  const focusFilePaths = collectFileContext(reduced)
+    .slice(0, 12)
+    .map((entry) => normalizeWorkspacePath(cwd, entry.path));
+
+  const digest = getLifetimeChangelogDigest(cwd, identityName, instanceIds, {
+    focusFilePaths,
+    sectionBudget: 10_000,
+  });
+
+  return digest.trim() ? digest : null;
+}
+
+function renderLifetimeArc(digest: string): string {
+  return ['── Lifetime Changelog Arc ──', '', digest].join('\n');
 }
 
 function normalizeWorkspacePath(cwd: string, filePath: string): string {
