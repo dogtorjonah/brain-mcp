@@ -139,8 +139,7 @@ function findSourceRoot(cwd: string): string {
   for (let depth = 0; depth < 64; depth += 1) {
     if (
       fs.existsSync(path.join(cursor, '.git')) ||
-      fs.existsSync(path.join(cursor, '.brain')) ||
-      fs.existsSync(path.join(cursor, '.atlas'))
+      fs.existsSync(path.join(cursor, '.brain'))
     ) {
       return cursor;
     }

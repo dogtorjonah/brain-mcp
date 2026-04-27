@@ -16,7 +16,6 @@ export interface BridgeDb {
   workspace: string;
   sourceRoot: string;
   dbPath: string;
-  legacy: boolean;
 }
 
 export interface ResolvedWorkspace {
@@ -59,7 +58,7 @@ export function closeBridgeDb(dbPath: string): void {
 export function openBridgeDb(workspace: string, sourceRoot: string): BridgeDb | null {
   const existingPath = resolveExistingAtlasDbPath(sourceRoot);
   if (!existingPath) return null;
-  const { dbPath, legacy } = existingPath;
+  const { dbPath } = existingPath;
 
   const existing = readonlyDbs.get(dbPath);
   if (existing) return existing;
@@ -68,7 +67,7 @@ export function openBridgeDb(workspace: string, sourceRoot: string): BridgeDb | 
     const db: AtlasDatabase = new Database(dbPath, { readonly: true });
     db.pragma('journal_mode = WAL');
     loadSqliteVec(db);
-    const entry: BridgeDb = { db, workspace, sourceRoot, dbPath, legacy };
+    const entry: BridgeDb = { db, workspace, sourceRoot, dbPath };
     readonlyDbs.set(dbPath, entry);
     return entry;
   } catch {

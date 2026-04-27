@@ -93,7 +93,6 @@ function resolveInitTarget(
         indexed,
         dbPath: atlasPath,
         existingDbPath: existingAtlas?.dbPath ?? null,
-        legacy: existingAtlas?.legacy ?? false,
         hasGit,
       },
     };
@@ -133,7 +132,7 @@ async function handleInit(
     }
     const target = resolved.target;
     const resolvedWorkspace = target.workspace;
-    const isBootstrap = !target.indexed || target.legacy;
+    const isBootstrap = !target.indexed;
 
     if (!confirm) {
       const headline = isBootstrap

@@ -5,23 +5,20 @@
  * Migrates from:
  *   1. rebirth-mcp's ~/.claude/identities/* (meta.json + chain.jsonl)
  *   2. rebirth-mcp's ~/.claude/rebirth-index.sqlite
- *   3. rebirth-mcp's ~/.claude/rebirth-chain/*.json
- *   4. Per-repo .atlas/ atlas DBs → edge backfill + repo registration
  *
  * Usage:
- *   npx brain-mcp migrate [--from-rebirth] [--scan-repos <path>] [--dry-run] [--verbose]
+ *   npx brain-mcp migrate [--dry-run] [--verbose]
  *
  * Idempotent: re-running only adds new rows. Existing rows are skipped.
  */
 
 import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
-import { join, basename } from 'node:path';
+import { join } from 'node:path';
 import { homedir } from 'node:os';
 import Database from 'better-sqlite3';
 
 import { HomeDb } from '../home/db.js';
 import { IdentityStore } from '../identity/store.js';
-import { EdgeEmitter } from '../edges/emitter.js';
 
 // ──────────────────────────────────────────
 // Config
@@ -42,8 +39,6 @@ interface MigrationResult {
   sopsMigrated: number;
   handoffNotesMigrated: number;
   sessionsMigrated: number;
-  reposScanned: number;
-  edgesBackfilled: number;
   errors: string[];
 }
 
@@ -212,126 +207,20 @@ function migrateRebirthIndex(homeDb: HomeDb, result: MigrationResult, dryRun: bo
 }
 
 // ──────────────────────────────────────────
-// Migration: repo atlas → edge backfill
-// ──────────────────────────────────────────
-
-function migrateAtlasRepos(homeDb: HomeDb, result: MigrationResult, dryRun: boolean, scanPaths?: string[]): void {
-  const emitter = new EdgeEmitter(homeDb);
-  const defaultScanPaths = [
-    join(homedir(), 'voxxo-swarm'),
-    join(homedir(), 'vet-soap'),
-  ];
-
-  const paths = scanPaths ?? defaultScanPaths;
-
-  for (const repoPath of paths) {
-    const atlasPath = join(repoPath, '.atlas', 'atlas.sqlite');
-    if (!existsSync(atlasPath)) {
-      continue;
-    }
-
-    const workspace = basename(repoPath);
-    console.log(`[migrate] Scanning atlas for repo "${workspace}" at ${repoPath}`);
-
-    // Register repo.
-    if (!dryRun) {
-      homeDb.db.prepare(`
-        INSERT INTO repo_registry (workspace, cwd, atlas_path, first_seen_at, last_attached_at)
-        VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(workspace) DO UPDATE SET last_attached_at = ?
-      `).run(workspace, repoPath, atlasPath, Date.now(), Date.now(), Date.now());
-    }
-    result.reposScanned++;
-
-    // Backfill edges from changelog.
-    const atlasDb = new Database(atlasPath, { readonly: true });
-    try {
-      const rows = atlasDb.prepare(`
-        SELECT id, workspace, file_path, summary, hazards_added, hazards_removed,
-               patterns_added, patterns_removed, author_instance_id, author_identity,
-               created_at
-        FROM atlas_changelog
-        WHERE author_instance_id IS NOT NULL OR author_identity IS NOT NULL
-        ORDER BY id ASC
-      `).all() as any[];
-
-      for (const row of rows) {
-        // Resolve identity name.
-        const identityName = row.author_identity ?? row.author_instance_id;
-        if (!identityName) continue;
-
-        // Skip if identity doesn't exist (pre-attribution).
-        if (!homeDb.db.prepare('SELECT 1 FROM identity_profiles WHERE name = ?').get(identityName)) continue;
-
-        // Skip if edges already exist for this changelog entry.
-        const existing = homeDb.db.prepare(
-          'SELECT 1 FROM atlas_identity_edges WHERE changelog_id = ? AND workspace = ?'
-        ).get(row.id, row.workspace ?? workspace);
-        if (existing) continue;
-
-        if (!dryRun) {
-          const hazardsAdded: string[] = parseJsonStringArray(row.hazards_added);
-          const hazardsRemoved: string[] = parseJsonStringArray(row.hazards_removed);
-          const patternsAdded: string[] = parseJsonStringArray(row.patterns_added);
-          const patternsRemoved: string[] = parseJsonStringArray(row.patterns_removed);
-
-          emitter.emitCommitEdges({
-            identityName,
-            workspace: row.workspace ?? workspace,
-            filePath: row.file_path,
-            changelogId: row.id,
-            hazardsAdded,
-            hazardsRemoved,
-            patternsAdded,
-            patternsRemoved,
-          });
-          result.edgesBackfilled++;
-        }
-      }
-      console.log(`[migrate]   ${rows.length} changelog entries scanned, ${result.edgesBackfilled} edge sets migrated`);
-    } catch (err) {
-      result.errors.push(`Atlas repo "${workspace}": ${err}`);
-      console.error(`[migrate]   ✗ Error scanning atlas for "${workspace}":`, err);
-    } finally {
-      atlasDb.close();
-    }
-  }
-}
-
-// ──────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────
 
-function parseJsonStringArray(val: unknown): string[] {
-  if (!val) return [];
-  if (typeof val === 'string') {
-    try {
-      const parsed = JSON.parse(val);
-      if (Array.isArray(parsed)) return parsed.map(String);
-    } catch {
-      // Single string.
-      return [String(val)];
-    }
-  }
-  if (Array.isArray(val)) return val.map(String);
-  return [];
-}
-
-function parseArgs(): { dryRun: boolean; verbose: boolean; scanRepos: string[] | undefined } {
+function parseArgs(): { dryRun: boolean; verbose: boolean } {
   const args = process.argv.slice(2);
   let dryRun = false;
   let verbose = false;
-  let scanRepos: string[] | undefined;
 
   for (let i = 0; i < args.length; i++) {
     if (args[i] === '--dry-run') dryRun = true;
     if (args[i] === '--verbose') verbose = true;
-    if (args[i] === '--scan-repos' && args[i + 1]) {
-      scanRepos = args[++i].split(',').map(p => p.trim());
-    }
   }
 
-  return { dryRun, verbose, scanRepos };
+  return { dryRun, verbose };
 }
 
 // ──────────────────────────────────────────
@@ -339,7 +228,7 @@ function parseArgs(): { dryRun: boolean; verbose: boolean; scanRepos: string[] |
 // ──────────────────────────────────────────
 
 function main(): void {
-  const { dryRun, scanRepos } = parseArgs();
+  const { dryRun } = parseArgs();
 
   console.log('[brain-mcp] Migration starting...');
   if (dryRun) console.log('[brain-mcp] DRY RUN — no writes');
@@ -350,8 +239,6 @@ function main(): void {
     sopsMigrated: 0,
     handoffNotesMigrated: 0,
     sessionsMigrated: 0,
-    reposScanned: 0,
-    edgesBackfilled: 0,
     errors: [],
   };
 
@@ -365,9 +252,6 @@ function main(): void {
     // Phase 2: rebirth-index.sqlite.
     migrateRebirthIndex(homeDb, result, dryRun);
 
-    // Phase 3: Atlas repo edge backfill.
-    migrateAtlasRepos(homeDb, result, dryRun, scanRepos);
-
     // Summary.
     console.log('\n[brain-mcp] Migration complete:');
     console.log(`  Identities migrated:    ${result.identitiesMigrated}`);
@@ -375,8 +259,6 @@ function main(): void {
     console.log(`  SOPs migrated:          ${result.sopsMigrated}`);
     console.log(`  Handoff notes migrated: ${result.handoffNotesMigrated}`);
     console.log(`  Sessions migrated:      ${result.sessionsMigrated}`);
-    console.log(`  Repos scanned:          ${result.reposScanned}`);
-    console.log(`  Edge sets backfilled:   ${result.edgesBackfilled}`);
     if (result.errors.length > 0) {
       console.log(`  Errors: ${result.errors.length}`);
       for (const err of result.errors) {

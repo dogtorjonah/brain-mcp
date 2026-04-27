@@ -6,7 +6,6 @@ export interface AttachedAtlas {
   workspace: string;
   sourceRoot: string;
   dbPath: string;
-  legacy: boolean;
   lastUsed: number;
 }
 
@@ -68,7 +67,6 @@ export class AttachCoordinator {
       workspace,
       sourceRoot,
       dbPath: existingPath.dbPath,
-      legacy: existingPath.legacy,
       lastUsed: Date.now(),
     };
     this.attached.set(existingPath.dbPath, attached);

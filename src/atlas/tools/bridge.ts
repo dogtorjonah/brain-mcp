@@ -59,10 +59,9 @@ export function registerBridgeTools(server: McpServer, runtime: AtlasRuntime): v
         };
       }
 
-      const indexedLines = indexed.map((root) => {
-        const mode = root.legacy ? 'legacy .atlas' : '.brain';
-        return `📦 ${root.workspace} (${mode})\n   ${root.sourceRoot}\n   ${root.existingDbPath ?? root.dbPath}`;
-      });
+      const indexedLines = indexed.map((root) =>
+        `📦 ${root.workspace}\n   ${root.sourceRoot}\n   ${root.existingDbPath ?? root.dbPath}`,
+      );
       const indexableLines = indexable.map((root) =>
         `🌱 ${root.workspace} — not indexed yet\n   ${root.sourceRoot}\n   ${root.dbPath}`,
       );

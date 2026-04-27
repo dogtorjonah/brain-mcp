@@ -3,7 +3,6 @@ import path from 'node:path';
 import { homedir } from 'node:os';
 
 export const BRAIN_ATLAS_DIR = '.brain';
-export const LEGACY_ATLAS_DIR = '.atlas';
 export const ATLAS_DB_FILENAME = 'atlas.sqlite';
 
 export interface DiscoveredRoot {
@@ -11,14 +10,12 @@ export interface DiscoveredRoot {
   workspace: string;
   /** Absolute path to the repo root. */
   sourceRoot: string;
-  /** True if a brain-mcp or legacy Atlas DB exists at this root. */
+  /** True if a brain-mcp Atlas DB exists at this root. */
   indexed: boolean;
   /** Preferred atlas sqlite path for new brain-mcp writes. */
   dbPath: string;
-  /** Existing DB path when indexed; may point at legacy .atlas. */
+  /** Existing DB path when indexed. */
   existingDbPath: string | null;
-  /** True if the existing DB is under the legacy .atlas path. */
-  legacy: boolean;
   /** True if this root has a .git entry (file or directory). */
   hasGit: boolean;
 }
@@ -39,15 +36,9 @@ export function preferredAtlasDbPath(sourceRoot: string): string {
   return path.join(sourceRoot, BRAIN_ATLAS_DIR, ATLAS_DB_FILENAME);
 }
 
-export function legacyAtlasDbPath(sourceRoot: string): string {
-  return path.join(sourceRoot, LEGACY_ATLAS_DIR, ATLAS_DB_FILENAME);
-}
-
-export function resolveExistingAtlasDbPath(sourceRoot: string): { dbPath: string; legacy: boolean } | null {
+export function resolveExistingAtlasDbPath(sourceRoot: string): { dbPath: string } | null {
   const brainPath = preferredAtlasDbPath(sourceRoot);
-  if (fs.existsSync(brainPath)) return { dbPath: brainPath, legacy: false };
-  const legacyPath = legacyAtlasDbPath(sourceRoot);
-  if (fs.existsSync(legacyPath)) return { dbPath: legacyPath, legacy: true };
+  if (fs.existsSync(brainPath)) return { dbPath: brainPath };
   return null;
 }
 
@@ -98,7 +89,6 @@ export function discoverAllRoots(currentSourceRoot: string): DiscoveredRoot[] {
           indexed,
           dbPath: preferredAtlasDbPath(childPath),
           existingDbPath: existing?.dbPath ?? null,
-          legacy: existing?.legacy ?? false,
           hasGit,
         });
       }
