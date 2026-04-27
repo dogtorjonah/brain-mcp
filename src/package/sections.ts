@@ -156,11 +156,11 @@ export function renderLastMessages(reduced: ReducedTranscript, maxPairs = 5): st
     );
     parts.push('');
     parts.push(`👤 USER  [${fmtTime(freshest.user.timestamp)}]`);
-    parts.push(trimToLines(freshest.user.text.trim(), 160));
+    parts.push(freshest.user.text.trim());
     parts.push('');
     if (freshest.ai) {
       parts.push(`🤖 AI  [${fmtTime(freshest.ai.timestamp)}]`);
-      parts.push(trimToLines(freshest.ai.text.trim(), 160));
+      parts.push(freshest.ai.text.trim());
       parts.push('');
     }
   }
@@ -174,11 +174,11 @@ export function renderLastMessages(reduced: ReducedTranscript, maxPairs = 5): st
     parts.push('');
     for (const { user, ai } of prior) {
       parts.push(`👤 USER  [${fmtTime(user.timestamp)}]`);
-      parts.push(trimToLines(user.text.trim(), 160));
+      parts.push(trimToLines(user.text.trim(), 300));
       parts.push('');
       if (ai) {
         parts.push(`🤖 AI  [${fmtTime(ai.timestamp)}]`);
-        parts.push(trimToLines(ai.text.trim(), 160));
+        parts.push(trimToLines(ai.text.trim(), 300));
         parts.push('');
       }
     }
@@ -221,7 +221,7 @@ export function renderCurrentThread(reduced: ReducedTranscript, maxTurns = 8): s
     ) {
       parts.push('(same as Last AI Message above)');
     } else {
-      parts.push(trimToLines(t.text.trim(), 20));
+      parts.push(trimToLines(t.text.trim(), 80));
     }
     parts.push('');
   }
