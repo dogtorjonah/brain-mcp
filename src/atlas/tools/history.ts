@@ -63,6 +63,8 @@ export interface AtlasHistoryArgs {
   authorInstanceId?: string;
   author_name?: string;
   authorName?: string;
+  author_identity?: string;
+  authorIdentity?: string;
   verification_status?: string;
   verificationStatus?: string;
   breaking_changes?: boolean;
@@ -87,6 +89,8 @@ export async function runHistoryTool(runtime: AtlasRuntime, {
   authorInstanceId,
   author_name,
   authorName,
+  author_identity,
+  authorIdentity,
   verification_status,
   verificationStatus,
   breaking_changes,
@@ -106,6 +110,7 @@ export async function runHistoryTool(runtime: AtlasRuntime, {
   const authorEngineValue = author_engine ?? authorEngine;
   const authorInstanceValue = author_instance_id ?? authorInstanceId;
   const authorNameValue = author_name ?? authorName;
+  const authorIdentityValue = author_identity ?? authorIdentity;
   const verificationValue = verification_status ?? verificationStatus;
   // Cap raised 200 -> 2000. The voxxo-swarm changelog already carries nearly
   // 1000 entries after ~6 days; a 200 ceiling silently hid ~80% of workspace
@@ -120,6 +125,7 @@ export async function runHistoryTool(runtime: AtlasRuntime, {
     author_engine: authorEngineValue,
     author_instance_id: authorInstanceValue,
     author_name: authorNameValue,
+    author_identity: authorIdentityValue,
     since,
     until,
     verification_status: verificationValue,
@@ -159,6 +165,7 @@ export async function runHistoryTool(runtime: AtlasRuntime, {
       author_engine: authorEngineValue ?? null,
       author_instance_id: authorInstanceValue ?? null,
       author_name: authorNameValue ?? null,
+      author_identity: authorIdentityValue ?? null,
       verification_status: verificationValue ?? null,
       since: since ?? null,
       until: until ?? null,
@@ -187,6 +194,8 @@ export function registerHistoryTool(server: McpServer, runtime: AtlasRuntime): v
       authorInstanceId: z.string().min(1).optional(),
       author_name: z.string().min(1).optional(),
       authorName: z.string().min(1).optional(),
+      author_identity: z.string().min(1).optional(),
+      authorIdentity: z.string().min(1).optional(),
       verification_status: z.string().min(1).optional(),
       verificationStatus: z.string().min(1).optional(),
       breaking_changes: coercedOptionalBoolean,

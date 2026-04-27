@@ -201,9 +201,11 @@ export function registerBrainSearchTool(server: McpServer, deps: SearchDependenc
       targetSilos = applySiloFilter(scopeConfig.silos, args.silos);
     }
 
-    const identity = args.identity ?? deps.getCurrentIdentity();
-    const sessionId = deps.getCurrentSessionId();
-    const projectSlug = deps.getCurrentProjectSlug();
+    const identity = scopeConfig.filterByIdentity
+      ? args.identity ?? deps.getCurrentIdentity()
+      : undefined;
+    const sessionId = scopeConfig.filterBySession ? deps.getCurrentSessionId() : undefined;
+    const projectSlug = scopeConfig.filterByProject ? deps.getCurrentProjectSlug() : undefined;
 
     // ── Per-silo retrieval (parallel) ───────────────────────────────
     const siloPromises: Promise<SiloHit[]>[] = [];
@@ -217,8 +219,8 @@ export function registerBrainSearchTool(server: McpServer, deps: SearchDependenc
               k: candidatePool,
               scope,
               identity,
-              sessionId: scopeConfig.filterBySession ? sessionId : undefined,
-              projectSlug: scopeConfig.filterByProject ? projectSlug : undefined,
+              sessionId,
+              projectSlug,
               weights: args.weights,
             }),
           );

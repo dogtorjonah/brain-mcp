@@ -1,5 +1,14 @@
-.atlas/
 node_modules/
+dist/
+coverage/
+*.tsbuildinfo
+
+.brain/
+.atlas/
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal
+
+.env
+.env.*
+!.env.example

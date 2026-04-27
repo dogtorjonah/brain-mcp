@@ -37,6 +37,7 @@ export interface NormalizedAtlasCommitPayload {
   author_instance_id?: string;
   author_engine?: string;
   author_name?: string;
+  author_identity?: string;
   review_entry_id?: string;
   quiet?: boolean;
   purpose?: string;
@@ -120,8 +121,12 @@ export const atlasCommitInputSchema = {
   breakingChanges: z.union([z.boolean(), z.string()]).optional().describe('Compatibility alias for breaking_changes.'),
   commit_sha: z.string().optional(),
   author_instance_id: z.string().optional(),
+  authorInstanceId: z.string().optional().describe('Compatibility alias for author_instance_id.'),
   author_engine: z.string().optional(),
+  authorEngine: z.string().optional().describe('Compatibility alias for author_engine.'),
   author_name: z.string().optional(),
+  author_identity: z.string().optional(),
+  authorIdentity: z.string().optional().describe('Compatibility alias for author_identity.'),
   review_entry_id: z.string().optional(),
   quiet: coercedOptionalBoolean.describe('Controls response verbosity (default true — compact one-line response). Set false to get verbose feedback with coverage warnings, changelog hints, and flush reminders.'),
   purpose: z.string().min(30).describe(
@@ -325,6 +330,7 @@ const CANONICAL_OUTPUT_KEYS = [
   'author_instance_id',
   'author_engine',
   'author_name',
+  'author_identity',
   'review_entry_id',
   'quiet',
   'purpose',
@@ -360,6 +366,9 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
     ['patterns_removed', 'patternsRemoved'],
     ['hazards_added', 'hazardsAdded'],
     ['hazards_removed', 'hazardsRemoved'],
+    ['author_instance_id', 'authorInstanceId'],
+    ['author_engine', 'authorEngine'],
+    ['author_identity', 'authorIdentity'],
     ['author_name', 'authorName'],
   ];
   for (const [canonical, alias] of aliasPairs) {
@@ -431,6 +440,9 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
   const authorName = toTrimmedString(payload.author_name);
   if (authorName) payload.author_name = authorName;
 
+  const authorIdentity = toTrimmedString(payload.author_identity);
+  if (authorIdentity) payload.author_identity = authorIdentity;
+
   for (const key of ['patterns_added', 'patterns_removed', 'hazards_added', 'hazards_removed', 'conventions', 'key_types', 'data_flows', 'hazards', 'patterns'] as const) {
     const normalized = toStringList(payload[key]);
     if (normalized) payload[key] = normalized;
@@ -459,4 +471,3 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
   }
   return normalized as NormalizedAtlasCommitPayload;
 }
-

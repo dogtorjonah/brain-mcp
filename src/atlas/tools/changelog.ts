@@ -90,6 +90,7 @@ function matchesFilters(
     cluster?: string;
     author_name?: string;
     author_instance_id?: string;
+    author_identity?: string;
     author_engine?: string;
     since?: string;
     until?: string;
@@ -102,6 +103,7 @@ function matchesFilters(
   if (filters.cluster && entry.cluster !== filters.cluster) return false;
   if (filters.author_name && entry.author_name !== filters.author_name) return false;
   if (filters.author_instance_id && entry.author_instance_id !== filters.author_instance_id) return false;
+  if (filters.author_identity && entry.author_identity !== filters.author_identity) return false;
   if (filters.author_engine && entry.author_engine !== filters.author_engine) return false;
   if (filters.since && entry.created_at < filters.since) return false;
   if (filters.until && entry.created_at > filters.until) return false;
@@ -147,6 +149,7 @@ function formatEntry(entry: AtlasChangelogRecord, diff?: string | null): string 
     `- commit_sha: ${entry.commit_sha ?? '(none)'}`,
     `- author_name: ${entry.author_name ?? '(none)'}`,
     `- author_instance_id: ${entry.author_instance_id ?? '(none)'}`,
+    `- author_identity: ${entry.author_identity ?? '(none)'}`,
     `- author_engine: ${entry.author_engine ?? '(none)'}`,
     `- review_entry_id: ${entry.review_entry_id ?? '(none)'}`,
     `- patterns_added: ${formatStringList(entry.patterns_added)}`,
@@ -175,6 +178,7 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
   const cluster = args.cluster as string | undefined;
   const author_name = args.author_name as string | undefined;
   const author_instance_id = args.author_instance_id as string | undefined;
+  const author_identity = args.author_identity as string | undefined;
   const author_engine = args.author_engine as string | undefined;
   const since = args.since as string | undefined;
   const until = args.until as string | undefined;
@@ -191,6 +195,7 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
     cluster,
     author_name,
     author_instance_id,
+    author_identity,
     author_engine,
     since,
     until,
@@ -230,6 +235,7 @@ async function handleQuery(runtime: AtlasRuntime, args: Record<string, unknown>)
       cluster,
       author_name,
       author_instance_id,
+      author_identity,
       author_engine,
       since,
       until,
@@ -278,6 +284,7 @@ export function registerChangelogTools(server: McpServer, runtime: AtlasRuntime)
       cluster: z.string().optional().describe('Filter by cluster name'),
       author_name: z.string().optional().describe('Filter by stamped author name'),
       author_instance_id: z.string().optional().describe('Filter by stamped author instance ID'),
+      author_identity: z.string().optional().describe('Filter by canonical brain identity'),
       author_engine: z.string().optional().describe('Filter by stamped author engine'),
       since: z.string().optional().describe('ISO date — only entries after this date'),
       until: z.string().optional().describe('ISO date — only entries before this date'),

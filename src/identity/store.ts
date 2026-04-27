@@ -11,8 +11,9 @@
  * - SOPs gain promoted_from_candidate linkage
  */
 
-import type { Database as DatabaseType } from 'better-sqlite3';
-import type { HomeDb } from './db.js';
+import type { HomeDb } from '../home/db.js';
+
+type DatabaseType = HomeDb['db'];
 
 // ──────────────────────────────────────────
 // Types

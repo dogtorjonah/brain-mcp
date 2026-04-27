@@ -31,7 +31,7 @@ function resolveRgPath(): string | null {
 /* ── Native grep fallback (zero external deps) ─────────────────────── */
 
 const TS_EXTENSIONS = new Set(['.ts', '.tsx', '.mts', '.cts']);
-const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.next', 'docs', '.atlas']);
+const SKIP_DIRS = new Set(['node_modules', 'dist', '.git', '.next', 'docs', '.brain', '.atlas']);
 const SKIP_GLOBS_SUFFIX = ['.d.ts'];
 
 interface CachedSourceFile {
@@ -359,6 +359,7 @@ function runGrep(symbolName: string, sourceRoot: string, definingFile: string, c
       '--glob',
       '!**/*.json',
       '--glob',
+      '!**/.brain/**',
       '!**/.atlas/**',
       '--glob',
       '!**/relay/scripts/codebase-atlas/**',

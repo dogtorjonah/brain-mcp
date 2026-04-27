@@ -10,14 +10,16 @@
  * work proportional to new data.
  */
 
-import type Database from 'better-sqlite3';
+import type { HomeDb } from '../home/db.js';
 import { mineSequencesFromSession, levenshteinSkipHashes, hashSequence, type NormalizerConfig } from './normalizer.js';
+
+type DatabaseType = HomeDb['db'];
 
 // ── Types ──────────────────────────────────────────────────────────────
 
 export interface WorkerDeps {
   /** The home database connection. */
-  db: Database.Database;
+  db: DatabaseType;
   /** Query tool_call chunks for a session. Returns rows with tool_name, file_paths, text, timestamp_ms. */
   querySessionChunks(sessionId: string): Array<{
     chunk_id: string;
@@ -155,7 +157,7 @@ export function runSopDiscovery(
  * Prune stale candidates: discard candidates where
  * now - last_seen_at > 30 days AND promoted_sop_id IS NULL.
  */
-export function pruneStaleCandidates(db: Database.Database, maxAgeMs = 30 * 24 * 60 * 60 * 1000): number {
+export function pruneStaleCandidates(db: DatabaseType, maxAgeMs = 30 * 24 * 60 * 60 * 1000): number {
   const cutoff = Date.now() - maxAgeMs;
   const result = db.prepare(
     `DELETE FROM sop_candidates WHERE last_seen_at < ? AND promoted_sop_id IS NULL`,

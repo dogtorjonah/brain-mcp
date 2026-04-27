@@ -9,12 +9,12 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type Database from 'better-sqlite3';
+import type { HomeDb } from '../home/db.js';
 
 // ── Tool registration ──────────────────────────────────────────────────
 
 export interface PromoteToolDeps {
-  db: Database.Database;
+  db: HomeDb['db'];
   getCurrentIdentity(): string | undefined;
   getCurrentSession(): string | null;
 }

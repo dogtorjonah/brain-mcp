@@ -50,6 +50,8 @@ export const atlasQuerySchema = {
   authorInstanceId: z.string().optional(),
   author_name: z.string().optional(),
   authorName: z.string().optional(),
+  author_identity: z.string().optional(),
+  authorIdentity: z.string().optional(),
   verification_status: z.string().optional(),
   verificationStatus: z.string().optional(),
   since: z.string().optional(),
@@ -211,6 +213,8 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       authorInstanceId,
       author_name,
       authorName,
+      author_identity,
+      authorIdentity,
       verification_status,
       verificationStatus,
       since,
@@ -242,6 +246,8 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       authorInstanceId?: string;
       author_name?: string;
       authorName?: string;
+      author_identity?: string;
+      authorIdentity?: string;
       verification_status?: string;
       verificationStatus?: string;
       since?: string;
@@ -328,6 +334,8 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
             authorInstanceId,
             author_name,
             authorName,
+            author_identity,
+            authorIdentity,
             verification_status,
             verificationStatus,
             since,

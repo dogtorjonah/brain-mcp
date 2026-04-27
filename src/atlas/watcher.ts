@@ -9,7 +9,7 @@ import type { AtlasFileRecord, AtlasRuntime } from './types.js';
 
 const WATCH_EXTENSIONS = new Set(['.ts', '.tsx', '.js', '.jsx', '.md']);
 const DEBOUNCE_MS = 5_000;
-const IGNORED_PARTS = new Set(['.atlas', '.git', 'dist', 'node_modules']);
+const IGNORED_PARTS = new Set(['.brain', '.atlas', '.git', 'dist', 'node_modules']);
 
 function toWorkspacePath(root: string, absolutePath: string): string | null {
   const relative = path.relative(root, absolutePath);

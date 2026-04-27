@@ -58,6 +58,7 @@ export interface AtlasChangelogRecord {
   author_instance_id: string | null;
   author_engine: string | null;
   author_name: string | null;
+  author_identity: string | null;
   review_entry_id: string | null;
   source: string;
   verification_status: string;
@@ -79,6 +80,7 @@ export interface AtlasChangelogInsertInput {
   author_instance_id?: string | null;
   author_engine?: string | null;
   author_name?: string | null;
+  author_identity?: string | null;
   review_entry_id?: string | null;
   source?: string;
   verification_status?: string;
@@ -103,6 +105,7 @@ export interface AtlasChangelogQuery {
   author_instance_id?: string;
   author_engine?: string;
   author_name?: string;
+  author_identity?: string;
   since?: string;
   until?: string;
   verification_status?: string;
@@ -203,6 +206,7 @@ export interface AtlasSymbolUpsertInput {
 export interface AtlasMetaUpsertInput {
   workspace: string;
   source_root: string;
+  brain_version?: string | null;
 }
 
 export interface AtlasFileUpsertInput {
@@ -433,7 +437,7 @@ const MAX_BACKUPS = 5;
 
 /**
  * Create a timestamped backup of the atlas database.
- * Backups are stored in .atlas/backups/ alongside the database.
+ * Backups are stored in .brain/backups/ alongside the database.
  * Keeps at most MAX_BACKUPS copies, pruning oldest when exceeded.
  * Returns the backup path on success, or null if the source doesn't exist.
  */
@@ -683,6 +687,7 @@ export function mapMetaRecord(row: Record<string, unknown>): AtlasMetaRecord {
   return {
     workspace: String(row.workspace ?? ''),
     source_root: String(row.source_root ?? ''),
+    brain_version: row.brain_version == null ? null : String(row.brain_version),
     updated_at: String(row.updated_at ?? ''),
   };
 }
@@ -703,6 +708,7 @@ export function mapChangelogRecord(row: Record<string, unknown>): AtlasChangelog
     author_instance_id: row.author_instance_id == null ? null : String(row.author_instance_id),
     author_engine: row.author_engine == null ? null : String(row.author_engine),
     author_name: row.author_name == null ? null : String(row.author_name),
+    author_identity: row.author_identity == null ? null : String(row.author_identity),
     review_entry_id: row.review_entry_id == null ? null : String(row.review_entry_id),
     source: String(row.source ?? 'agent'),
     verification_status: String(row.verification_status ?? 'pending'),
@@ -1018,12 +1024,12 @@ export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogIns
     `INSERT INTO atlas_changelog (
       workspace, file_path, summary, patterns_added, patterns_removed,
       hazards_added, hazards_removed, cluster, breaking_changes, commit_sha,
-      author_instance_id, author_engine, author_name, review_entry_id, source,
+      author_instance_id, author_engine, author_name, author_identity, review_entry_id, source,
       verification_status, verification_notes, recovery_key, created_at
     ) VALUES (
       @workspace, @file_path, @summary, @patterns_added, @patterns_removed,
       @hazards_added, @hazards_removed, @cluster, @breaking_changes, @commit_sha,
-      @author_instance_id, @author_engine, @author_name, @review_entry_id, @source,
+      @author_instance_id, @author_engine, @author_name, @author_identity, @review_entry_id, @source,
       @verification_status, @verification_notes, @recovery_key, COALESCE(@created_at, CURRENT_TIMESTAMP)
     )`,
   ).run({
@@ -1040,6 +1046,7 @@ export function insertAtlasChangelog(db: AtlasDatabase, input: AtlasChangelogIns
     author_instance_id: input.author_instance_id ?? null,
     author_engine: input.author_engine ?? null,
     author_name: input.author_name ?? null,
+    author_identity: input.author_identity ?? null,
     review_entry_id: input.review_entry_id ?? null,
     source: input.source ?? 'agent',
     verification_status: input.verification_status ?? 'pending',
@@ -1119,6 +1126,10 @@ export function queryAtlasChangelog(db: AtlasDatabase, filters: AtlasChangelogQu
   if (filters.author_name) {
     whereParts.push('c.author_name = ?');
     params.push(filters.author_name);
+  }
+  if (filters.author_identity) {
+    whereParts.push('c.author_identity = ?');
+    params.push(filters.author_identity);
   }
   if (filters.since) {
     whereParts.push('c.created_at >= ?');
@@ -1613,14 +1624,16 @@ export function replaceImportEdges(db: AtlasDatabase, workspace: string, edges: 
 
 export function upsertAtlasMeta(db: AtlasDatabase, input: AtlasMetaUpsertInput): void {
   db.prepare(
-    `INSERT INTO atlas_meta (workspace, source_root, updated_at)
-     VALUES (?, ?, CURRENT_TIMESTAMP)
+    `INSERT INTO atlas_meta (workspace, source_root, brain_version, updated_at)
+     VALUES (?, ?, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(workspace) DO UPDATE SET
        source_root = excluded.source_root,
+       brain_version = COALESCE(excluded.brain_version, atlas_meta.brain_version),
        updated_at = CURRENT_TIMESTAMP`,
   ).run(
     input.workspace,
     input.source_root,
+    input.brain_version ?? null,
   );
 }
 

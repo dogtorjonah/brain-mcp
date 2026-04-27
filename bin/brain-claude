@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# brain-claude: wrapper shim that lets brain_respawn relaunch Claude in-place.
+
+set -u
+
+export BRAIN_WRAPPER_PID=$$
+export REBIRTH_WRAPPER_PID=$$
+
+identity_flag=""
+new_identity_flag=""
+filtered_args=()
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --identity)
+      identity_flag="${2:-}"; shift 2 ;;
+    --identity=*)
+      identity_flag="${1#--identity=}"; shift ;;
+    --new-identity)
+      new_identity_flag="${2:-}"; shift 2 ;;
+    --new-identity=*)
+      new_identity_flag="${1#--new-identity=}"; shift ;;
+    --force)
+      shift ;;
+    *)
+      filtered_args+=("$1"); shift ;;
+  esac
+done
+set -- ${filtered_args[@]+"${filtered_args[@]}"}
+
+if [[ -n "$identity_flag" && -n "$new_identity_flag" ]]; then
+  echo "[brain-claude] error: --identity and --new-identity are mutually exclusive" >&2
+  exit 2
+fi
+
+if [[ -n "$new_identity_flag" ]]; then
+  CLAUDE_IDENTITY="$new_identity_flag"
+elif [[ -n "$identity_flag" ]]; then
+  CLAUDE_IDENTITY="$identity_flag"
+fi
+
+if [[ -n "${CLAUDE_IDENTITY:-}" ]]; then
+  case "$CLAUDE_IDENTITY" in
+    .|..|*/*|*$'\n'*)
+      echo "[brain-claude] error: invalid identity name: '$CLAUDE_IDENTITY'" >&2
+      exit 2 ;;
+  esac
+  export CLAUDE_IDENTITY
+  echo "[brain-claude] identity: $CLAUDE_IDENTITY" >&2
+else
+  echo "[brain-claude] identity: <unassigned>" >&2
+fi
+
+project_dir="${CLAUDE_PROJECT_DIR:-$PWD}"
+case "$project_dir" in
+  /mnt/*|/media/*)
+    fallback_home="${HOME:-/tmp}"
+    echo "[brain-claude] notice: anchoring respawn sentinel at $fallback_home due to mount fsync risk." >&2
+    project_dir="$fallback_home"
+    ;;
+esac
+
+export BRAIN_WRAPPER_PROJECT_DIR="$project_dir"
+export REBIRTH_WRAPPER_PROJECT_DIR="$project_dir"
+
+brain_sentinel="$project_dir/.claude/.brain-respawn-$$"
+legacy_sentinel="$project_dir/.claude/.rebirth-respawn-$$"
+claude_bin="${BRAIN_CLAUDE_BIN:-${REBIRTH_CLAUDE_BIN:-claude}}"
+claude_child_pid=0
+last_rc=0
+
+forward_term() {
+  if [[ "$claude_child_pid" -gt 0 ]]; then
+    kill -TERM "$claude_child_pid" 2>/dev/null || true
+  fi
+}
+trap forward_term TERM INT HUP
+
+while :; do
+  init_text=""
+  extra_flags=()
+  sentinel=""
+
+  if [[ -f "$brain_sentinel" ]]; then
+    sentinel="$brain_sentinel"
+  elif [[ -f "$legacy_sentinel" ]]; then
+    sentinel="$legacy_sentinel"
+  fi
+
+  if [[ -n "$sentinel" ]]; then
+    handoff_path="$(cat "$sentinel" 2>/dev/null || true)"
+    rm -f "$sentinel"
+
+    meta="${sentinel}.meta"
+    if [[ -f "$meta" ]]; then
+      while IFS= read -r line || [[ -n "$line" ]]; do
+        case "$line" in
+          effort=*)
+            effort_level="${line#effort=}"
+            case "$effort_level" in
+              low|medium|high|xhigh|max)
+                extra_flags+=("--effort" "$effort_level")
+                ;;
+            esac
+            ;;
+          model=*)
+            model_name="${line#model=}"
+            if [[ "$model_name" =~ ^[A-Za-z0-9._-]+$ ]]; then
+              extra_flags+=("--model" "$model_name")
+            else
+              echo "[brain-claude] warn: ignoring malformed model=$model_name in sidecar" >&2
+            fi
+            ;;
+        esac
+      done < "$meta"
+      rm -f "$meta"
+    fi
+
+    if [[ -n "$handoff_path" && -f "$handoff_path" ]]; then
+      init_text="$(cat "$handoff_path" 2>/dev/null || true)"
+      rm -f "$handoff_path"
+    fi
+  fi
+
+  if [[ -n "$init_text" ]]; then
+    "$claude_bin" ${extra_flags[@]+"${extra_flags[@]}"} "$@" "$init_text" &
+  else
+    "$claude_bin" ${extra_flags[@]+"${extra_flags[@]}"} "$@" &
+  fi
+  claude_child_pid=$!
+  wait "$claude_child_pid"
+  last_rc=$?
+  claude_child_pid=0
+
+  if [[ ! -f "$brain_sentinel" && ! -f "$legacy_sentinel" ]]; then
+    break
+  fi
+done
+
+exit "$last_rc"

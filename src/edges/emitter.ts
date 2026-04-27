@@ -14,9 +14,10 @@
  *   lookup          — identity looked up a file (lightweight usage signal)
  */
 
-import type { Database as DatabaseType } from 'better-sqlite3';
 import type { HomeDb } from '../home/db.js';
 import type { IdentityStore } from '../identity/store.js';
+
+type DatabaseType = HomeDb['db'];
 
 // ──────────────────────────────────────────
 // Types

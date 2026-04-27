@@ -14,13 +14,13 @@
  */
 
 import Database from 'better-sqlite3';
-import type { Database as DatabaseType } from 'better-sqlite3';
 import * as sqliteVec from 'sqlite-vec';
 import { mkdirSync, readdirSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { homedir } from 'node:os';
 
 export const EMBED_DIM = 384;
+type DatabaseType = InstanceType<typeof Database>;
 
 /** Default location for the brain home database. */
 export const DEFAULT_BRAIN_DIR = join(homedir(), '.brain');

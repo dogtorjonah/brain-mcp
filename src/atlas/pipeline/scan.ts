@@ -35,7 +35,7 @@ export interface ScanResult {
 
 const EXCLUDE_DIRS = new Set([
   'node_modules', 'dist', '.git', '.next', '__tests__', 'tests', 'test',
-  '.atlas', '.turbo', '.cache', 'coverage', 'build', 'out', '.vercel', '.voxxo-swarm',
+  '.brain', '.atlas', '.turbo', '.cache', 'coverage', 'build', 'out', '.vercel', '.voxxo-swarm',
   '.svelte-kit', '.nuxt', '.output',
 ]);
 

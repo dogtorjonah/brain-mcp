@@ -102,7 +102,7 @@ function readStatus(sourceRoot: string): null | {
   phases: Record<string, { total?: number; completed?: number; failed?: number; done?: boolean }>;
 } {
   try {
-    const raw = fs.readFileSync(path.join(sourceRoot, '.atlas', 'status.json'), 'utf8');
+    const raw = fs.readFileSync(path.join(sourceRoot, '.brain', 'status.json'), 'utf8');
     return JSON.parse(raw) as {
       currentPhase: string;
       phases: Record<string, { total?: number; completed?: number; failed?: number; done?: boolean }>;

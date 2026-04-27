@@ -14,6 +14,7 @@ import path from 'node:path';
 import fs from 'node:fs';
 import type { AtlasDatabase } from './db.js';
 import { backupAtlasDatabase, populateFts, populateChangelogFts } from './db.js';
+import { resolveExistingAtlasDbPath } from '../bridge/workspaceLocator.js';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -47,7 +48,7 @@ export interface AtlasMergePreview {
 // ---------------------------------------------------------------------------
 
 /**
- * Find all git worktrees that have an `.atlas/atlas.sqlite` and return
+ * Find all git worktrees that have a brain-mcp or legacy Atlas DB and return
  * their paths plus the worktree branch name.
  */
 export function discoverWorktreeAtlases(sourceRoot: string): Array<{
@@ -69,14 +70,14 @@ export function discoverWorktreeAtlases(sourceRoot: string): Array<{
     for (const chamber of chambers) {
       if (!chamber.isDirectory()) continue;
       const sharedDir = path.join(worktreesDir, chamber.name, 'shared');
-      const atlasPath = path.join(sharedDir, '.atlas', 'atlas.sqlite');
-      if (!fs.existsSync(atlasPath)) continue;
+      const existing = resolveExistingAtlasDbPath(sharedDir);
+      if (!existing) continue;
 
       // Extract branch name from the directory structure: evolve/<id>
       const branch = `evolve/${chamber.name}`;
       results.push({
         worktreePath: sharedDir,
-        dbPath: atlasPath,
+        dbPath: existing.dbPath,
         branch,
       });
     }
@@ -110,8 +111,8 @@ export function resolveSourceDb(
     sourceRoot,
     '.voxxo-swarm', 'worktrees', 'chambers', chamberId, 'shared',
   );
-  const atlasPath = path.join(worktreeDir, '.atlas', 'atlas.sqlite');
-  if (!fs.existsSync(atlasPath)) {
+  const existing = resolveExistingAtlasDbPath(worktreeDir);
+  if (!existing) {
     // Try listing available worktrees
     const available = discoverWorktreeAtlases(sourceRoot);
     if (available.length === 0) {
@@ -121,7 +122,7 @@ export function resolveSourceDb(
     return { error: `Worktree "${source}" not found. Available: ${names}` };
   }
 
-  return { dbPath: atlasPath, label: `evolve/${chamberId}` };
+  return { dbPath: existing.dbPath, label: `evolve/${chamberId}` };
 }
 
 /**

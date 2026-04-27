@@ -223,7 +223,7 @@ async function runCrossrefOnlyBatch(
   context: BatchPipelineContext,
   requestedFiles?: string[],
 ): Promise<CrossrefOnlyBatchResult> {
-  const statusPath = path.join(context.rootDir, '.atlas', 'status.json');
+  const statusPath = path.join(context.rootDir, '.brain', 'status.json');
   const startedAt = new Date().toISOString();
   const filePhases = new Map<string, PhaseLevel>();
 
@@ -311,8 +311,8 @@ async function runSequentialPipelineBatch(
     return { failed: 0, succeeded: 0 };
   }
 
-  // Status file — written to .atlas/status.json during pipeline execution
-  const statusPath = path.join(context.rootDir, '.atlas', 'status.json');
+  // Status file — written to .brain/status.json during pipeline execution
+  const statusPath = path.join(context.rootDir, '.brain', 'status.json');
   const startedAt = new Date().toISOString();
 
   interface PhaseCounter { total: number; completed: number; failed: number; done: boolean }
@@ -623,7 +623,7 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
   // made `atlas_admin reindex` lie about progress ("0 files" while the worker
   // is still burning ~5 cores re-embedding everything). Re-open status.json
   // for a post-queue section so the admin tool reflects reality.
-  const statusPath = path.join(rootDir, '.atlas', 'status.json');
+  const statusPath = path.join(rootDir, '.brain', 'status.json');
   const postStartedAt = new Date().toISOString();
   const writePostStatus = (
     currentPhase: 'fts' | 'embeddings',

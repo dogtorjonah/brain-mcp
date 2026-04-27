@@ -122,6 +122,7 @@ export interface AtlasQueueRecord {
 export interface AtlasMetaRecord {
   workspace: string;
   source_root: string;
+  brain_version: string | null;
   updated_at: string;
 }
 
@@ -136,8 +137,23 @@ export interface AtlasServerConfig {
   force?: boolean;
 }
 
+export interface AtlasCommitEdgeEmitter {
+  emitCommitEdges(opts: {
+    identityName: string;
+    workspace: string;
+    filePath: string;
+    changelogId: number;
+    sessionId?: string;
+    hazardsAdded?: string[];
+    hazardsRemoved?: string[];
+    patternsAdded?: string[];
+    patternsRemoved?: string[];
+  }): unknown;
+}
+
 export interface AtlasRuntime {
   config: AtlasServerConfig;
   db: import('./db.js').AtlasDatabase;
   server?: import('@modelcontextprotocol/sdk/server/mcp.js').McpServer;
+  edgeEmitter?: AtlasCommitEdgeEmitter;
 }

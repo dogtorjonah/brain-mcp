@@ -28,14 +28,15 @@ import path from 'node:path';
 import { z } from 'zod';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { AtlasRuntime } from '../types.js';
+import type { AtlasFileRecord } from '../types.js';
 import { toolWithDescription } from './helpers.js';
 import { atlasCommitInputSchema, normalizeAtlasCommitPayload } from './commitPayload.js';
 import {
   getAtlasFile,
   insertAtlasChangelog,
   upsertFileRecord,
+  type AtlasChangelogRecord,
 } from '../db.js';
-import { appendLocalAtlasCommitArtifact } from '../../persistence/localAtlasCommitArtifacts.js';
 import {
   refreshAtlasChangelogEmbedding,
   refreshAtlasFileEmbedding,
@@ -277,6 +278,7 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         author_instance_id,
         author_engine,
         author_name,
+        author_identity,
         review_entry_id,
         purpose,
         public_api,
@@ -295,12 +297,17 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       // summary so legacy DB fields stay populated. Both are guaranteed
       // non-empty by the schema's min(10) constraint.
       const resolvedSummary = summary ?? changelog_entry ?? '';
+      const envIdentity = process.env.CLAUDE_IDENTITY?.trim() || undefined;
+      const resolvedAuthorIdentity = author_identity ?? envIdentity ?? author_name;
+      const resolvedAuthorInstanceId = author_instance_id ?? envIdentity ?? null;
+      const resolvedAuthorEngine = author_engine ?? (process.env.CLAUDE_ENGINE?.trim() || null);
+      const resolvedAuthorName = author_name ?? resolvedAuthorIdentity ?? null;
 
       // ── Step 0: Acquire atlas file claim ────────────────────────────────
       // Prevents concurrent atlas_commit writes to the same file. When 10
       // agents enrich the atlas in parallel, two can race on the same file —
       // both read the existing record, both merge, second write stomps first.
-      const holder = author_instance_id ?? `anon-${Date.now()}`;
+      const holder = resolvedAuthorIdentity ?? resolvedAuthorInstanceId ?? `anon-${Date.now()}`;
       const claimResult = tryAcquireAtlasClaim(runtime.config.workspace, file_path, holder);
       if (!claimResult.acquired) {
         return {
@@ -335,117 +342,128 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           };
         }
 
-        // ── Step 1: Write changelog entry ──────────────────────────────────
+        // ── Step 1+2: Write changelog, file metadata, and synapse edges ────
         const resolvedSha = commit_sha ?? resolveCommitSha(file_path, runtime.config.sourceRoot);
         const changelogCreatedAt = new Date().toISOString();
-        const entry = insertAtlasChangelog(runtime.db, {
-          workspace: runtime.config.workspace,
-          file_path,
-          summary: resolvedSummary,
-          patterns_added,
-          patterns_removed,
-          hazards_added,
-          hazards_removed,
-          cluster: cluster ?? null,
-          breaking_changes,
-          commit_sha: resolvedSha,
-          author_instance_id: author_instance_id ?? null,
-          author_engine: author_engine ?? null,
-          author_name: author_name ?? null,
-          review_entry_id: review_entry_id ?? null,
-          source: 'atlas_commit',
-          created_at: changelogCreatedAt,
-        });
-        recordIdempotency(idemKey, entry.id, currentFileHash);
-        appendLocalAtlasCommitArtifact({
-          workspace: runtime.config.workspace,
-          repo_root: runtime.config.sourceRoot,
-          original_changelog_id: entry.id,
-          created_at: changelogCreatedAt,
-          file_path,
-          summary: resolvedSummary,
-          patterns_added,
-          patterns_removed,
-          hazards_added,
-          hazards_removed,
-          cluster: cluster ?? null,
-          breaking_changes: breaking_changes === true,
-          commit_sha: resolvedSha,
-          author_instance_id: author_instance_id ?? null,
-          author_engine: author_engine ?? null,
-          author_name: author_name ?? null,
-          review_entry_id: review_entry_id ?? null,
-          file_hash: currentFileHash,
-          payload: {
+        interface CommitWriteResult {
+          entry: AtlasChangelogRecord;
+          existing: AtlasFileRecord | null;
+          mergedPurpose: string;
+          mergedBlurb: string;
+          mergedPatterns: string[];
+          mergedHazards: string[];
+          mergedConventions: string[];
+          mergedPublicApi: unknown[];
+          mergedKeyTypes: unknown[];
+          mergedDataFlows: string[];
+          mergedSourceHighlights: AtlasFileRecord['source_highlights'];
+        }
+
+        const writeCommit = runtime.db.transaction((): CommitWriteResult => {
+          const entry = insertAtlasChangelog(runtime.db, {
+            workspace: runtime.config.workspace,
             file_path,
-            changelog_entry,
-            summary,
+            summary: resolvedSummary,
             patterns_added,
             patterns_removed,
             hazards_added,
             hazards_removed,
-            cluster,
+            cluster: cluster ?? null,
             breaking_changes,
-            commit_sha: resolvedSha ?? undefined,
-            author_instance_id,
-            author_engine,
-            author_name,
-            review_entry_id,
-            quiet,
-            purpose,
-            public_api,
-            conventions,
-            key_types,
-            data_flows,
-            hazards,
-            patterns,
-            dependencies,
-            blurb,
-            source_highlights,
-          },
+            commit_sha: resolvedSha,
+            author_instance_id: resolvedAuthorInstanceId,
+            author_engine: resolvedAuthorEngine,
+            author_name: resolvedAuthorName,
+            author_identity: resolvedAuthorIdentity ?? null,
+            review_entry_id: review_entry_id ?? null,
+            source: 'atlas_commit',
+            created_at: changelogCreatedAt,
+          });
+
+          // Inline atlas_files update (required). Read existing record to merge
+          // with — only overwrite fields the agent explicitly provided.
+          const existing = getAtlasFile(runtime.db, runtime.config.workspace, file_path);
+
+          const mergedPurpose = purpose ?? existing?.purpose ?? '';
+          const mergedBlurb = blurb ?? existing?.blurb ?? '';
+          const mergedPatterns = patterns ?? existing?.patterns ?? [];
+          const mergedHazards = hazards ?? existing?.hazards ?? [];
+          const mergedConventions = conventions ?? existing?.conventions ?? [];
+          const mergedPublicApi = public_api ?? existing?.public_api ?? [];
+          const mergedExports = public_api
+            ? public_api.map((a) => ({ name: a.name, type: a.type }))
+            : existing?.exports ?? [];
+          const mergedKeyTypes = key_types ?? existing?.key_types ?? [];
+          const mergedDataFlows = data_flows ?? existing?.data_flows ?? [];
+          const mergedDependencies = dependencies ?? existing?.dependencies ?? {};
+          const mergedSourceHighlights = source_highlights ?? existing?.source_highlights ?? [];
+
+          upsertFileRecord(runtime.db, {
+            workspace: runtime.config.workspace,
+            file_path,
+            file_hash: currentFileHash ?? existing?.file_hash ?? null,
+            cluster: cluster ?? existing?.cluster ?? null,
+            loc: existing?.loc ?? 0,
+            blurb: mergedBlurb,
+            purpose: mergedPurpose,
+            public_api: mergedPublicApi,
+            exports: mergedExports,
+            patterns: mergedPatterns,
+            dependencies: mergedDependencies,
+            data_flows: mergedDataFlows,
+            key_types: mergedKeyTypes,
+            hazards: mergedHazards,
+            conventions: mergedConventions,
+            cross_refs: existing?.cross_refs ?? null,
+            source_highlights: mergedSourceHighlights,
+            language: existing?.language ?? 'typescript',
+            extraction_model: `${resolvedAuthorEngine ?? 'agent'}/atlas_commit`,
+            last_extracted: new Date().toISOString(),
+          });
+
+          if (resolvedAuthorIdentity) {
+            runtime.edgeEmitter?.emitCommitEdges({
+              identityName: resolvedAuthorIdentity,
+              workspace: runtime.config.workspace,
+              filePath: file_path,
+              changelogId: entry.id,
+              sessionId: resolvedAuthorInstanceId ?? undefined,
+              hazardsAdded: hazards_added,
+              hazardsRemoved: hazards_removed,
+              patternsAdded: patterns_added,
+              patternsRemoved: patterns_removed,
+            });
+          }
+
+          return {
+            entry,
+            existing,
+            mergedPurpose,
+            mergedBlurb,
+            mergedPatterns,
+            mergedHazards,
+            mergedConventions,
+            mergedPublicApi,
+            mergedKeyTypes,
+            mergedDataFlows,
+            mergedSourceHighlights,
+          };
         });
 
-        // ── Step 2: Inline atlas_files update (required) ───────────────────
-        // Read existing record to merge with — we only overwrite fields the
-        // agent explicitly provided, preserving everything else.
-        const existing = getAtlasFile(runtime.db, runtime.config.workspace, file_path);
-
-        const mergedPurpose = purpose ?? existing?.purpose ?? '';
-        const mergedBlurb = blurb ?? existing?.blurb ?? '';
-        const mergedPatterns = patterns ?? existing?.patterns ?? [];
-        const mergedHazards = hazards ?? existing?.hazards ?? [];
-        const mergedConventions = conventions ?? existing?.conventions ?? [];
-        const mergedPublicApi = public_api ?? existing?.public_api ?? [];
-        const mergedExports = public_api
-          ? public_api.map((a) => ({ name: a.name, type: a.type }))
-          : existing?.exports ?? [];
-        const mergedKeyTypes = key_types ?? existing?.key_types ?? [];
-        const mergedDataFlows = data_flows ?? existing?.data_flows ?? [];
-        const mergedDependencies = dependencies ?? existing?.dependencies ?? {};
-        const mergedSourceHighlights = source_highlights ?? existing?.source_highlights ?? [];
-
-        upsertFileRecord(runtime.db, {
-          workspace: runtime.config.workspace,
-          file_path,
-          file_hash: currentFileHash ?? existing?.file_hash ?? null,
-          cluster: cluster ?? existing?.cluster ?? null,
-          loc: existing?.loc ?? 0,
-          blurb: mergedBlurb,
-          purpose: mergedPurpose,
-          public_api: mergedPublicApi,
-          exports: mergedExports,
-          patterns: mergedPatterns,
-          dependencies: mergedDependencies,
-          data_flows: mergedDataFlows,
-          key_types: mergedKeyTypes,
-          hazards: mergedHazards,
-          conventions: mergedConventions,
-          cross_refs: existing?.cross_refs ?? null,
-          source_highlights: mergedSourceHighlights,
-          language: existing?.language ?? 'typescript',
-          extraction_model: `${author_engine ?? 'agent'}/atlas_commit`,
-          last_extracted: new Date().toISOString(),
-        });
+        const {
+          entry,
+          existing,
+          mergedPurpose,
+          mergedBlurb,
+          mergedPatterns,
+          mergedHazards,
+          mergedConventions,
+          mergedPublicApi,
+          mergedKeyTypes,
+          mergedDataFlows,
+          mergedSourceHighlights,
+        } = writeCommit() as CommitWriteResult;
+        recordIdempotency(idemKey, entry.id, currentFileHash);
 
         const refreshedFile = getAtlasFile(runtime.db, runtime.config.workspace, file_path);
         if (refreshedFile) {

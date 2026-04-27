@@ -26,21 +26,13 @@ import {
   discoverAllRoots,
   closeBridgeDb,
   openBridgeDb,
+  preferredAtlasDbPath,
+  resolveExistingAtlasDbPath,
   slugifyWorkspaceName,
   type DiscoveredRoot,
 } from './bridge.js';
 import { runReindexTool } from './reindex.js';
 import { coercedOptionalBoolean } from '../../zodHelpers.js';
-import {
-  formatAtlasChangelogAuthorBackfillResult,
-  runAtlasChangelogAuthorBackfill,
-} from '../changelogAuthorBackfill.js';
-import {
-  formatAtlasChangelogNoiseCleanupResult,
-  formatAtlasChangelogRecoveryResult,
-  runAtlasChangelogNoiseCleanup,
-  runAtlasChangelogRecovery,
-} from '../changelogRecovery.js';
 import {
   discoverWorktreeAtlases,
   resolveSourceDb,
@@ -54,7 +46,7 @@ import {
 // ============================================================================
 
 interface AdminArgs {
-  action: 'init' | 'reindex' | 'bridge_list' | 'backfill_changelog_authors' | 'recover_changelog' | 'cleanup_changelog_noise' | 'merge';
+  action: 'init' | 'reindex' | 'bridge_list' | 'merge';
   files?: string[];
   workspace?: string;
   sourceRoot?: string;
@@ -86,9 +78,10 @@ function resolveInitTarget(
     if (!stat.isDirectory()) {
       return { error: `sourceRoot is not a directory: ${absRoot}` };
     }
-    const atlasPath = path.join(absRoot, '.atlas', 'atlas.sqlite');
+    const atlasPath = preferredAtlasDbPath(absRoot);
+    const existingAtlas = resolveExistingAtlasDbPath(absRoot);
     const gitPath = path.join(absRoot, '.git');
-    const indexed = fs.existsSync(atlasPath);
+    const indexed = existingAtlas != null;
     const hasGit = fs.existsSync(gitPath);
     if (!indexed && !hasGit) {
       return { error: `sourceRoot is neither an indexed atlas workspace nor a git repo: ${absRoot}` };
@@ -99,6 +92,8 @@ function resolveInitTarget(
         sourceRoot: absRoot,
         indexed,
         dbPath: atlasPath,
+        existingDbPath: existingAtlas?.dbPath ?? null,
+        legacy: existingAtlas?.legacy ?? false,
         hasGit,
       },
     };
@@ -138,7 +133,7 @@ async function handleInit(
     }
     const target = resolved.target;
     const resolvedWorkspace = target.workspace;
-    const isBootstrap = !target.indexed;
+    const isBootstrap = !target.indexed || target.legacy;
 
     if (!confirm) {
       const headline = isBootstrap
@@ -150,7 +145,7 @@ async function handleInit(
           `  Source:    ${target.sourceRoot}`,
           `  Database:  ${target.dbPath} (will be created)`,
           '',
-          'No existing atlas database will be touched. A new `.atlas/atlas.sqlite` will be created',
+          'No existing atlas database will be touched. A new `.brain/atlas.sqlite` will be created',
           'and the full extraction pipeline will run (structure → flow → crossref → cluster).',
           'Call with confirm=true to proceed.',
         ]
@@ -167,12 +162,12 @@ async function handleInit(
     }
 
     // Close any cached bridge handle (for indexed targets) before nuking
-    if (target.indexed) closeBridgeDb(target.dbPath);
+    if (target.indexed && target.existingDbPath) closeBridgeDb(target.existingDbPath);
 
     // Fresh DB handle — resetAtlasDatabase handles both "exists (nuke)" and
     // "doesn't exist (create)" cases. When the file is absent, backupAtlasDatabase
     // returns null, deleteAtlasDatabaseFiles silently ignores ENOENT, and
-    // openAtlasDatabase auto-creates the `.atlas/` directory via ensureDirectory.
+    // openAtlasDatabase auto-creates the `.brain/` directory via ensureDirectory.
     const freshDb = resetAtlasDatabase({
       dbPath: target.dbPath,
       migrationDir: ATLAS_MIGRATION_DIR,
@@ -200,7 +195,7 @@ async function handleInit(
       : `🔥 Database nuked and recreated for workspace "${resolvedWorkspace}" (cross-workspace).`;
     const trailer = isBootstrap
       ? '💡 Once extraction settles, query it via `atlas_query action=search workspace=' + resolvedWorkspace + '`.'
-      : '💾 A backup was automatically saved to .atlas/backups/ before destruction. Use it to restore if needed.';
+      : '💾 A backup was automatically saved to .brain/backups/ before destruction. Use it to restore if needed.';
 
     return {
       content: [
@@ -250,7 +245,7 @@ async function handleInit(
   return {
     content: [
       { type: 'text', text: `🔥 Database nuked and recreated for workspace "${runtime.config.workspace}".\n\n${reindexText}` },
-      { type: 'text', text: '💾 A backup was automatically saved to .atlas/backups/ before destruction. Use it to restore if needed.' },
+      { type: 'text', text: '💾 A backup was automatically saved to .brain/backups/ before destruction. Use it to restore if needed.' },
     ],
   };
 }
@@ -315,116 +310,6 @@ async function handleBridgeList(
       },
       { type: 'text', text: tips.join('\n') },
     ],
-  };
-}
-
-async function handleBackfillChangelogAuthors(
-  runtime: AtlasRuntime,
-  confirm?: boolean,
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  if (!confirm) {
-    const preview = runAtlasChangelogAuthorBackfill(runtime.db, { apply: false });
-    return {
-      content: [{
-        type: 'text',
-        text: [
-          formatAtlasChangelogAuthorBackfillResult(preview, { dryRun: true }),
-          '',
-          'Call with confirm=true to apply the backfill. The repair only updates rows whose current atlas_changelog record still matches the original file_path + changelog summary found in local transcript/event logs.',
-        ].join('\n'),
-      }],
-    };
-  }
-
-  const backupPath = backupAtlasDatabase(runtime.config.dbPath);
-  const result = runAtlasChangelogAuthorBackfill(runtime.db, { apply: true });
-  const backupLine = backupPath
-    ? `Backup: ${backupPath}`
-    : 'Backup: skipped (database file not found or backup failed)';
-  return {
-    content: [{
-      type: 'text',
-      text: [
-        formatAtlasChangelogAuthorBackfillResult(result),
-        backupLine,
-      ].join('\n\n'),
-    }],
-  };
-}
-
-async function handleRecoverChangelog(
-  runtime: AtlasRuntime,
-  confirm?: boolean,
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const runArgs = {
-    workspace: runtime.config.workspace,
-    sourceRoot: runtime.config.sourceRoot,
-  };
-  if (!confirm) {
-    const preview = runAtlasChangelogRecovery(runtime.db, runArgs, { apply: false });
-    return {
-      content: [{
-        type: 'text',
-        text: [
-          formatAtlasChangelogRecoveryResult(preview, { dryRun: true }),
-          '',
-          'This repair prefers durable atlas commit artifacts for the current repo, falls back to transcript/canonical-event heuristics for historical atlas_commit calls, and then uses edit-provenance traces plus nearby transcript context to backfill edits that never got an atlas_commit at all. Call with confirm=true to insert the missing atlas_changelog rows.',
-        ].join('\n'),
-      }],
-    };
-  }
-
-  const backupPath = backupAtlasDatabase(runtime.config.dbPath);
-  const result = runAtlasChangelogRecovery(runtime.db, runArgs, { apply: true });
-  const backupLine = backupPath
-    ? `Backup: ${backupPath}`
-    : 'Backup: skipped (database file not found or backup failed)';
-  return {
-    content: [{
-      type: 'text',
-      text: [
-        formatAtlasChangelogRecoveryResult(result),
-        backupLine,
-      ].join('\n\n'),
-    }],
-  };
-}
-
-async function handleCleanupChangelogNoise(
-  runtime: AtlasRuntime,
-  confirm?: boolean,
-): Promise<{ content: Array<{ type: 'text'; text: string }> }> {
-  const runArgs = {
-    workspace: runtime.config.workspace,
-    sourceRoot: runtime.config.sourceRoot,
-  };
-  if (!confirm) {
-    const preview = runAtlasChangelogNoiseCleanup(runtime.db, runArgs, { apply: false });
-    return {
-      content: [{
-        type: 'text',
-        text: [
-          formatAtlasChangelogNoiseCleanupResult(preview, { dryRun: true }),
-          '',
-          'This cleanup collapses duplicate recovery rows that describe the same file/summary change within a short window, then removes edit-provenance salvage rows only when a better changelog row already covers the same file inside the recovery coverage window. Call with confirm=true to delete the noisy rows.',
-        ].join('\n'),
-      }],
-    };
-  }
-
-  const backupPath = backupAtlasDatabase(runtime.config.dbPath);
-  const result = runAtlasChangelogNoiseCleanup(runtime.db, runArgs, { apply: true });
-  const backupLine = backupPath
-    ? `Backup: ${backupPath}`
-    : 'Backup: skipped (database file not found or backup failed)';
-  return {
-    content: [{
-      type: 'text',
-      text: [
-        formatAtlasChangelogNoiseCleanupResult(result),
-        backupLine,
-      ].join('\n\n'),
-    }],
   };
 }
 
@@ -506,18 +391,18 @@ export function registerAdminTool(server: McpServer, runtime: AtlasRuntime): voi
     [
       'Strategic operations tool for Atlas maintenance, refresh, and workspace discovery.',
       'Use atlas_admin when the Atlas itself needs to be updated or inspected, not when you want code answers from the Atlas.',
-      'Actions: init destroys the database and rebuilds from scratch (requires confirm=true, auto-backs up to .atlas/backups/ before destruction) — or bootstraps a brand-new atlas for any local git repo that does not yet have one; reindex reruns extraction work and is the main way to refresh Atlas state after code changes; bridge_list discovers every local Atlas workspace AND every indexable git repo on the machine; backfill_changelog_authors repairs missing atlas_changelog author metadata by scanning local transcript and canonical-event logs for historical atlas_commit results; recover_changelog restores missing atlas_changelog rows for the current repo from durable atlas commit artifacts, transcript/canonical-event traces, and edit-provenance logs for missed atlas_commit gaps; cleanup_changelog_noise prunes duplicate recovery rows and superseded edit-provenance salvage once higher-confidence changelog rows exist; merge ports atlas_files metadata and atlas_changelog entries from a worktree or external Atlas database into the local Atlas — use after merging a git worktree branch to bring agent-authored Atlas commits along.',
-      'Fresh-index bootstrap: `atlas_admin action=init workspace=<name> confirm=true` works for any git repo next to the current source root or inside $HOME, even without an existing .atlas/ directory. For repos outside those dirs, pass `sourceRoot=/abs/path/to/repo`. A new `.atlas/atlas.sqlite` is created and the full pipeline runs (structure → flow → crossref → cluster). No existing data is touched when bootstrapping.',
+      'Actions: init destroys the database and rebuilds from scratch (requires confirm=true, auto-backs up to .brain/backups/ before destruction) — or bootstraps a brand-new atlas for any local git repo that does not yet have one; reindex reruns extraction work and is the main way to refresh Atlas state after code changes; bridge_list discovers every local Atlas workspace AND every indexable git repo on the machine; merge ports atlas_files metadata and atlas_changelog entries from a worktree or external Atlas database into the local Atlas — use after merging a git worktree branch to bring agent-authored Atlas commits along.',
+      'Fresh-index bootstrap: `atlas_admin action=init workspace=<name> confirm=true` works for any git repo next to the current source root or inside $HOME, even without an existing .brain/ directory. For repos outside those dirs, pass `sourceRoot=/abs/path/to/repo`. A new `.brain/atlas.sqlite` is created and the full pipeline runs (structure → flow → crossref → cluster). No existing data is touched when bootstrapping.',
       'Merge workflow: after `git merge <worktree-branch>`, run `atlas_admin action=merge source=<worktree-id>` to preview, then `atlas_admin action=merge source=<worktree-id> confirm=true` to apply. Omit `source` to list available worktree Atlas databases. The merge inserts new atlas_files records, updates existing records with richer metadata from the source, and ports missing atlas_changelog entries (deduped by file_path + summary + created_at). A backup is created automatically before applying.',
-      'Workflow hints: prefer reindex over init — init destroys all changelog history and agent metadata; use reindex with no args first to inspect status before starting work; use files=[...] for targeted refreshes after touching a few files; use confirm=true only when you actually want to launch a broader run; use phase="crossref" for cross-reference-only refreshes when structural passes are already current; use bridge_list before querying another workspace so you see what is indexed AND what is indexable; use backfill_changelog_authors with confirm=false first for a dry run if you want an author-repair preview; use recover_changelog with confirm=false first to preview transcript-backed changelog restoration and missed-atlas-commit backfill for the current repo; use cleanup_changelog_noise with confirm=false first to preview duplicate/superseded-row deletion before applying it; use merge after merging a git worktree branch to port the worktree Atlas data into the local Atlas without manual SQL surgery.',
+      'Workflow hints: prefer reindex over init — init destroys all changelog history and agent metadata; use reindex with no args first to inspect status before starting work; use files=[...] for targeted refreshes after touching a few files; use confirm=true only when you actually want to launch a broader run; use phase="crossref" for cross-reference-only refreshes when structural passes are already current; use bridge_list before querying another workspace so you see what is indexed AND what is indexable; use merge after merging a git worktree branch to port the worktree Atlas data into the local Atlas without manual SQL surgery.',
       'The refreshed pipeline now feeds richer outputs, including AST-verified structural edges, deterministic flow analysis, heuristic crossref cross-references, and Leiden community clusters, so admin actions directly control the quality and freshness of those higher-value results.',
     ].join('\n'),
     {
-      action: z.enum(['init', 'reindex', 'bridge_list', 'backfill_changelog_authors', 'recover_changelog', 'cleanup_changelog_noise', 'merge']),
+      action: z.enum(['init', 'reindex', 'bridge_list', 'merge']),
       files: z.array(z.string().min(1)).optional().describe('File paths to re-extract (reindex action)'),
       workspace: z.string().optional().describe('Target workspace (defaults to current). For init, can name an indexed workspace, an indexable git repo, or an arbitrary slug when paired with sourceRoot.'),
       sourceRoot: z.string().optional().describe('Absolute path to a git repo to init (escape hatch for repos outside the auto-scanned dirs). When omitted, init resolves the workspace by name via discoverAllRoots.'),
-      confirm: coercedOptionalBoolean.describe('Confirm destructive or write actions (init, reindex, backfill_changelog_authors, recover_changelog, cleanup_changelog_noise). Default: dry-run / preview'),
+      confirm: coercedOptionalBoolean.describe('Confirm destructive or write actions (init, reindex, merge). Default: dry-run / preview'),
       phase: z.enum(['crossref']).optional().describe('Limit reindex to crossref phase only'),
       source: z.string().optional().describe('Source Atlas to merge from — worktree ID (e.g. "TABNDPgU1Ne8"), branch name ("evolve/TABNDPgU1Ne8"), or absolute path to an atlas.sqlite file. Omit to list available worktree Atlases.'),
     },
@@ -534,19 +419,13 @@ export function registerAdminTool(server: McpServer, runtime: AtlasRuntime): voi
           });
         case 'bridge_list':
           return handleBridgeList(runtime);
-        case 'backfill_changelog_authors':
-          return handleBackfillChangelogAuthors(runtime, args.confirm);
-        case 'recover_changelog':
-          return handleRecoverChangelog(runtime, args.confirm);
-        case 'cleanup_changelog_noise':
-          return handleCleanupChangelogNoise(runtime, args.confirm);
         case 'merge':
           return handleMerge(runtime, args.source, args.confirm);
         default:
           return {
             content: [{
               type: 'text',
-              text: `Unknown atlas_admin action: ${String((args as { action: string }).action)}. Valid: init, reindex, bridge_list, backfill_changelog_authors, recover_changelog, cleanup_changelog_noise.`,
+              text: `Unknown atlas_admin action: ${String((args as { action: string }).action)}. Valid: init, reindex, bridge_list, merge.`,
             }],
           };
       }

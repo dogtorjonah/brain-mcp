@@ -8,7 +8,7 @@
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
-import type Database from 'better-sqlite3';
+import type { HomeDb } from '../home/db.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -27,7 +27,7 @@ interface SopCandidateRow {
 // ── Tool registration ──────────────────────────────────────────────────
 
 export interface CandidatesToolDeps {
-  db: Database.Database;
+  db: HomeDb['db'];
   getCurrentIdentity(): string | undefined;
 }
 
