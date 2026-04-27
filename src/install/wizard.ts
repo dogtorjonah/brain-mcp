@@ -7,21 +7,23 @@ import { spawnSync } from 'node:child_process';
 import { installShim } from './shim.js';
 import { initBrainHome } from './brainHome.js';
 import { warmEmbeddings } from './embeddings.js';
+import { installClaudeGuidance } from './claudeMd.js';
 
 /**
  * `brain setup` — one-command install wizard for brain-mcp.
  *
  * Steps (each independent, each idempotent):
- *   1. shim     — append `claude() { brain-claude "$@"; }` to user's rc file
- *   2. mcp      — `claude mcp add brain-mcp -s user -- ...`
+ *   1. shim       — append `claude() { brain-claude "$@"; }` to user's rc file
+ *   2. mcp        — `claude mcp add brain-mcp -s user -- ...`
  *   3. brain-home — create ~/.brain/, run home migrations on brain.sqlite
- *   4. embeddings — pre-fetch the HF model so first MCP call isn't slow
+ *   4. claude-md  — append atlas-first usage primer to ~/.claude/CLAUDE.md
+ *   5. embeddings — pre-fetch the HF model so first MCP call isn't slow
  *
  * Failures in one step do not abort the others. Re-running on an already-
  * installed system is a no-op (each step reports already-installed).
  */
 
-export type WizardStep = 'shim' | 'mcp' | 'brain-home' | 'embeddings';
+export type WizardStep = 'shim' | 'mcp' | 'brain-home' | 'claude-md' | 'embeddings';
 
 export type WizardStatus =
   | 'installed'
@@ -51,6 +53,7 @@ export interface WizardOptions {
   noShim?: boolean;
   noMcp?: boolean;
   noBrainHome?: boolean;
+  noClaudeMd?: boolean;
   noEmbeddings?: boolean;
   shell?: string;
   rcFile?: string;
@@ -107,6 +110,10 @@ export async function runWizard(opts: WizardOptions = {}): Promise<WizardResult>
 
   if (!opts.noBrainHome) {
     steps.push(runBrainHomeStep({ dryRun }));
+  }
+
+  if (!opts.noClaudeMd) {
+    steps.push(runClaudeMdStep({ dryRun, home }));
   }
 
   if (!opts.noEmbeddings) {
@@ -267,6 +274,39 @@ function runBrainHomeStep(opts: { dryRun: boolean }): WizardStepResult {
   return { step: 'brain-home', status: 'already-installed', detail: result.detail };
 }
 
+// ── Step: ~/.claude/CLAUDE.md guidance ───────────────────────────────
+
+function runClaudeMdStep(opts: { dryRun: boolean; home: string }): WizardStepResult {
+  const result = installClaudeGuidance({ home: opts.home, dryRun: opts.dryRun });
+  if (!result.ok) {
+    return {
+      step: 'claude-md',
+      status: 'failed',
+      detail: result.reason ?? `failed to update ${result.targetPath}`,
+    };
+  }
+  if (result.status === 'already-installed') {
+    return {
+      step: 'claude-md',
+      status: 'already-installed',
+      detail: `atlas guidance already present in ${result.targetPath}`,
+    };
+  }
+  if (result.status === 'dry-run') {
+    return {
+      step: 'claude-md',
+      status: 'dry-run',
+      detail: `would append atlas guidance to ${result.targetPath}`,
+    };
+  }
+  const backupNote = result.backupPath ? ` (backup: ${result.backupPath})` : '';
+  return {
+    step: 'claude-md',
+    status: 'installed',
+    detail: `appended atlas guidance to ${result.targetPath}${backupNote}`,
+  };
+}
+
 // ── Step: embedding warmup ───────────────────────────────────────────
 
 async function runEmbeddingsStep(opts: { dryRun: boolean; model?: string }): Promise<WizardStepResult> {
@@ -302,6 +342,7 @@ const STEP_LABEL: Record<WizardStep, string> = {
   shim: 'shell shim   ',
   mcp: 'MCP server   ',
   'brain-home': 'brain home   ',
+  'claude-md': 'CLAUDE.md    ',
   embeddings: 'embeddings   ',
 };
 
