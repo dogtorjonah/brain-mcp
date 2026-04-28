@@ -28,8 +28,25 @@ interface AtlasRuntimeShape {
 
 type RegisterAtlasTool = (server: unknown, runtime: AtlasRuntimeShape) => void;
 
+const WATCH_EXTENSIONS = new Set([
+  '.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs',
+  '.sql',
+  '.py',
+  '.go', '.rs', '.java', '.kt', '.swift',
+  '.vue', '.svelte',
+  '.md',
+]);
+const IGNORED_PARTS = new Set([
+  '.brain', '.atlas', '.git', 'dist', 'node_modules', '.next',
+  '.turbo', '.cache', 'coverage', 'build', 'out', '.vercel',
+]);
+const DEFAULT_REFRESH_DEBOUNCE_MS = 1_500;
+const DEFAULT_REFRESH_COOLDOWN_MS = 15_000;
+const DEFAULT_MAX_BATCH = 20;
+
 class AtlasToolClient {
   private readonly registry = new ToolRegistry();
+  private coordinator: AtlasFreshnessCoordinator | null = null;
 
   private constructor(
     private readonly sourceRoot: string,
@@ -44,6 +61,7 @@ class AtlasToolClient {
     const runtime = await createAtlasRuntime(sourceRoot, edgeEmitter, options);
     const client = new AtlasToolClient(sourceRoot, runtime);
     await client.captureTools();
+    client.startCoordinator();
     return client;
   }
 
@@ -51,11 +69,36 @@ class AtlasToolClient {
     if (!this.registry.hasTool(name)) {
       return normalizeError(new Error(`Atlas tool "${name}" is not available for ${this.sourceRoot}`));
     }
+    this.coordinator?.setCaller(caller);
     return this.registry.callTool(name, args, caller, this.runtime);
   }
 
   close(): void {
+    this.coordinator?.close();
+    this.coordinator = null;
     this.runtime.db.close();
+  }
+
+  private startCoordinator(): void {
+    if (!isAutoRefreshEnabled()) {
+      return;
+    }
+    this.coordinator = new AtlasFreshnessCoordinator(this.sourceRoot, async (files, caller) => {
+      const result = await this.registry.callTool(
+        'atlas_admin',
+        { action: 'reindex', files, confirm: true },
+        caller,
+        this.runtime,
+      );
+      if (result.isError) {
+        const text = result.content
+          .map((item) => (typeof item.text === 'string' ? item.text : ''))
+          .filter(Boolean)
+          .join('\n');
+        process.stderr.write(`[brain-daemon] atlas auto-refresh failed for ${this.sourceRoot}: ${text || 'unknown error'}\n`);
+      }
+    });
+    this.coordinator.start();
   }
 
   private async captureTools(): Promise<void> {
@@ -80,6 +123,147 @@ class AtlasToolClient {
         process.stderr.write(
           `[brain-daemon] atlas registrar ${exportName} unavailable: ${error instanceof Error ? error.message : String(error)}\n`,
         );
+      }
+    }
+  }
+}
+
+class AtlasFreshnessCoordinator {
+  private readonly debounceMs = readPositiveInt(process.env.BRAIN_ATLAS_AUTO_REFRESH_DEBOUNCE_MS)
+    ?? DEFAULT_REFRESH_DEBOUNCE_MS;
+  private readonly cooldownMs = readPositiveInt(process.env.BRAIN_ATLAS_AUTO_REFRESH_COOLDOWN_MS)
+    ?? DEFAULT_REFRESH_COOLDOWN_MS;
+  private readonly maxBatch = readPositiveInt(process.env.BRAIN_ATLAS_AUTO_REFRESH_MAX_BATCH)
+    ?? DEFAULT_MAX_BATCH;
+  private readonly watchers = new Map<string, fs.FSWatcher>();
+  private readonly visitedDirs = new Set<string>();
+  private readonly pending = new Set<string>();
+  private timer: NodeJS.Timeout | null = null;
+  private running = false;
+  private lastStartedAt = 0;
+  private caller: CallerContext | null = null;
+
+  constructor(
+    private readonly sourceRoot: string,
+    private readonly onBatch: (files: string[], caller: CallerContext) => Promise<void>,
+  ) {}
+
+  start(): void {
+    this.registerDirectory(this.sourceRoot);
+  }
+
+  setCaller(caller: CallerContext): void {
+    this.caller = {
+      ...caller,
+      env: { ...caller.env },
+    };
+  }
+
+  close(): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    for (const watcher of this.watchers.values()) {
+      watcher.close();
+    }
+    this.watchers.clear();
+    this.visitedDirs.clear();
+    this.pending.clear();
+  }
+
+  private registerDirectory(directory: string): void {
+    const absoluteDir = path.resolve(directory);
+    if (this.visitedDirs.has(absoluteDir) || isIgnoredPath(absoluteDir)) {
+      return;
+    }
+    this.visitedDirs.add(absoluteDir);
+
+    let entries: fs.Dirent[];
+    try {
+      entries = fs.readdirSync(absoluteDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        this.registerDirectory(path.join(absoluteDir, entry.name));
+      }
+    }
+
+    try {
+      const watcher = fs.watch(absoluteDir, (eventType, filename) => {
+        if (!filename) {
+          return;
+        }
+        const absolutePath = path.join(absoluteDir, String(filename));
+        if (eventType === 'rename' && pathExistsAsDirectory(absolutePath)) {
+          this.registerDirectory(absolutePath);
+          return;
+        }
+        this.schedule(absolutePath);
+      });
+      this.watchers.set(absoluteDir, watcher);
+    } catch {
+      // Watch limits and transient deletions should not take down the daemon.
+    }
+  }
+
+  private schedule(absolutePath: string): void {
+    if (!isWatchedFile(absolutePath) || isIgnoredPath(absolutePath)) {
+      return;
+    }
+    const filePath = toWorkspacePath(this.sourceRoot, absolutePath);
+    if (!filePath) {
+      return;
+    }
+    this.pending.add(filePath);
+    this.arm(this.debounceMs);
+  }
+
+  private arm(delayMs: number): void {
+    if (this.timer) {
+      clearTimeout(this.timer);
+    }
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.flush();
+    }, Math.max(0, delayMs));
+    this.timer.unref();
+  }
+
+  private async flush(): Promise<void> {
+    if (this.pending.size === 0) {
+      return;
+    }
+    if (this.running) {
+      this.arm(this.cooldownMs);
+      return;
+    }
+    const remainingCooldown = this.cooldownMs - (Date.now() - this.lastStartedAt);
+    if (remainingCooldown > 0) {
+      this.arm(remainingCooldown);
+      return;
+    }
+
+    const batch = [...this.pending].slice(0, this.maxBatch);
+    for (const filePath of batch) {
+      this.pending.delete(filePath);
+    }
+
+    this.running = true;
+    this.lastStartedAt = Date.now();
+    try {
+      await this.onBatch(batch, this.caller ?? fallbackCaller(this.sourceRoot));
+    } catch (error) {
+      process.stderr.write(
+        `[brain-daemon] atlas auto-refresh failed for ${this.sourceRoot}: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+    } finally {
+      this.running = false;
+      if (this.pending.size > 0) {
+        this.arm(this.cooldownMs);
       }
     }
   }
@@ -138,6 +322,57 @@ function enrichAtlasArgs(name: string, args: Record<string, unknown>, caller: Ca
   }
 
   return enriched;
+}
+
+function isAutoRefreshEnabled(): boolean {
+  const value = process.env.BRAIN_ATLAS_AUTO_REFRESH?.trim().toLowerCase();
+  return value !== '0' && value !== 'false' && value !== 'off';
+}
+
+function readPositiveInt(value: string | undefined): number | undefined {
+  if (!value) return undefined;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+function pathExistsAsDirectory(filePath: string): boolean {
+  try {
+    return fs.statSync(filePath).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+function isIgnoredPath(absolutePath: string): boolean {
+  return absolutePath.split(path.sep).some((part) => IGNORED_PARTS.has(part));
+}
+
+function isWatchedFile(absolutePath: string): boolean {
+  return WATCH_EXTENSIONS.has(path.extname(absolutePath).toLowerCase());
+}
+
+function toWorkspacePath(root: string, absolutePath: string): string | null {
+  const relative = path.relative(root, absolutePath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative.split(path.sep).join('/');
+}
+
+function fallbackCaller(sourceRoot: string): CallerContext {
+  const env: Record<string, string> = {};
+  for (const [key, value] of Object.entries(process.env)) {
+    if (typeof value === 'string') {
+      env[key] = value;
+    }
+  }
+  return {
+    cwd: sourceRoot,
+    pid: process.pid,
+    ppid: process.ppid,
+    startedAt: Date.now(),
+    env,
+  };
 }
 
 function findSourceRoot(cwd: string): string {

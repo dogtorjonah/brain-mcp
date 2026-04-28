@@ -1,6 +1,6 @@
 import path from 'node:path';
 import { writeFileSync, unlinkSync } from 'node:fs';
-import { getAtlasFile, getFilePhase, listAtlasFiles, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertFileRecord } from '../db.js';
+import { deleteAtlasFile, getAtlasFile, getFilePhase, listAtlasFiles, listImportedBy, listImports, openAtlasDatabase, rebuildFts, resetAtlasDatabase, upsertAtlasMeta, upsertFileRecord } from '../db.js';
 import type { AtlasCrossRefs, AtlasFileRecord, AtlasServerConfig, SourceHighlight } from '../types.js';
 import { backfillAtlasEmbeddings } from '../embeddings.js';
 import { toFileUpsertInput } from './shared.js';
@@ -215,6 +215,110 @@ function selectRequestedFiles(
     missingRequested: requestedSet ? Math.max(requestedSet.size - selected.length, 0) : 0,
     selected,
   };
+}
+
+function normalizeRequestedFiles(rootDir: string, requestedFiles?: string[]): string[] {
+  if (!requestedFiles || requestedFiles.length === 0) {
+    return [];
+  }
+  const normalized = requestedFiles
+    .map((file) => {
+      const trimmed = file.trim();
+      if (!trimmed) return '';
+      const absolute = path.isAbsolute(trimmed)
+        ? path.resolve(trimmed)
+        : path.resolve(rootDir, trimmed);
+      const relative = path.relative(rootDir, absolute);
+      if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+        return '';
+      }
+      return relative.replaceAll(path.sep, '/');
+    })
+    .filter(Boolean);
+  return [...new Set(normalized)];
+}
+
+function expandIncrementalTargets(
+  db: ReturnType<typeof openAtlasDatabase>,
+  workspace: string,
+  rootDir: string,
+  requestedFiles?: string[],
+): string[] | undefined {
+  const directTargets = normalizeRequestedFiles(rootDir, requestedFiles);
+  if (directTargets.length === 0) {
+    return undefined;
+  }
+
+  const targets = new Set(directTargets);
+  for (const filePath of directTargets) {
+    for (const dependent of listImportedBy(db, workspace, filePath)) {
+      targets.add(dependent);
+    }
+    for (const dependency of listImports(db, workspace, filePath)) {
+      targets.add(dependency);
+    }
+  }
+  return [...targets];
+}
+
+function expandTargetsWithScannedImports(
+  targets: string[] | undefined,
+  scannedFiles: ScanFileInfo[],
+): { targets: string[] | undefined; added: number } {
+  if (!targets || targets.length === 0) {
+    return { targets, added: 0 };
+  }
+
+  const expanded = new Set(targets);
+  const before = expanded.size;
+  for (const file of scannedFiles) {
+    for (const importedFile of file.imports) {
+      expanded.add(importedFile);
+    }
+  }
+
+  return {
+    targets: [...expanded],
+    added: expanded.size - before,
+  };
+}
+
+function pruneMissingFiles(
+  db: ReturnType<typeof openAtlasDatabase>,
+  workspace: string,
+  filePaths: string[],
+): number {
+  let pruned = 0;
+  for (const filePath of filePaths) {
+    if (deleteAtlasFile(db, workspace, filePath)) {
+      pruned += 1;
+      console.log(`[atlas-reindex] pruned missing file: ${filePath}`);
+    }
+  }
+  return pruned;
+}
+
+function markCrossRefsStale(
+  db: ReturnType<typeof openAtlasDatabase>,
+  workspace: string,
+  filePaths: string[],
+): void {
+  if (filePaths.length === 0) {
+    return;
+  }
+  const update = db.prepare(
+    `UPDATE atlas_files
+     SET cross_refs = NULL,
+         updated_at = CURRENT_TIMESTAMP
+     WHERE workspace = ?
+       AND file_path = ?`,
+  );
+  const tx = db.transaction((paths: string[]) => {
+    for (const filePath of paths) {
+      update.run(workspace, filePath);
+    }
+  });
+  tx([...new Set(filePaths)]);
 }
 
 async function runCrossrefOnlyBatch(
@@ -580,8 +684,21 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
   } = options;
   const phase = options.phase ?? 'full';
 
-  const scan = await runScan(rootDir, workspace, db);
-  const requestedSelection = selectRequestedFiles(scan.files, options.files);
+  let incrementalTargets = expandIncrementalTargets(db, workspace, rootDir, options.files);
+  let scan = await runScan(rootDir, workspace, db, { targetPaths: incrementalTargets });
+  const postScanTargets = expandTargetsWithScannedImports(incrementalTargets, scan.files);
+  if (postScanTargets.added > 0) {
+    incrementalTargets = postScanTargets.targets;
+    scan = await runScan(rootDir, workspace, db, { targetPaths: incrementalTargets });
+  }
+  const prunedMissing = pruneMissingFiles(db, workspace, scan.missingFiles);
+  if (prunedMissing > 0) {
+    console.log(`[atlas-reindex] pruned ${prunedMissing} missing atlas file row(s)`);
+  }
+  if (incrementalTargets && scan.files.length > 0) {
+    markCrossRefsStale(db, workspace, scan.files.map((file) => file.filePath));
+  }
+  const requestedSelection = selectRequestedFiles(scan.files, incrementalTargets);
 
   const atlasRecords = new Map(
     listAtlasFiles(db, workspace).map((record) => [record.file_path, record] as const),
@@ -602,7 +719,7 @@ export async function runRuntimeReindex(options: RuntimeReindexOptions): Promise
   };
 
   if (phase === 'crossref') {
-    const result = await runCrossrefOnlyBatch('reindex/crossref', scan.files, context, options.files);
+    const result = await runCrossrefOnlyBatch('reindex/crossref', scan.files, context, incrementalTargets);
     rebuildFts(db);
     return {
       workspace,

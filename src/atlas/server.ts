@@ -284,7 +284,9 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const transport = new StdioServerTransport();
   await server.connect(transport);
 
-  const stopWatcher = startAtlasWatcher(runtime);
+  const stopWatcher = process.env.BRAIN_ATLAS_STANDALONE_WATCH === '1'
+    ? startAtlasWatcher(runtime)
+    : () => undefined;
   const shutdown = (): void => {
     stopWatcher();
     try {

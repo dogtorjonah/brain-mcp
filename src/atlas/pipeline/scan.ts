@@ -31,6 +31,7 @@ export interface ScanResult {
   rootDir: string;
   files: ScanFileInfo[];
   importEdges: AtlasImportEdgeRecord[];
+  missingFiles: string[];
 }
 
 const EXCLUDE_DIRS = new Set([
@@ -146,6 +147,82 @@ async function discoverFiles(dir: string, files: string[] = []): Promise<string[
   return files;
 }
 
+function toWorkspacePath(root: string, filePath: string): string | null {
+  const absoluteRoot = path.resolve(root);
+  const absolutePath = path.isAbsolute(filePath)
+    ? path.resolve(filePath)
+    : path.resolve(absoluteRoot, filePath);
+  const relative = path.relative(absoluteRoot, absolutePath);
+  if (!relative || relative.startsWith('..') || path.isAbsolute(relative)) {
+    return null;
+  }
+  return relative.replaceAll(path.sep, '/');
+}
+
+function isIgnoredWorkspacePath(filePath: string): boolean {
+  return filePath.split('/').some((part) => EXCLUDE_DIRS.has(part));
+}
+
+function isAllowedWorkspaceFile(filePath: string): boolean {
+  return ALLOWED_EXTENSIONS.has(path.extname(filePath).toLowerCase());
+}
+
+async function collectTargetFiles(
+  rootDir: string,
+  targetPaths: string[],
+): Promise<{ sourceFiles: string[]; missingFiles: string[]; selectedSourceFiles: string[] }> {
+  const sourceFiles: string[] = [];
+  const missingFiles: string[] = [];
+  const selectedSourceFiles: string[] = [];
+  const seenFiles = new Set<string>();
+  const seenMissing = new Set<string>();
+
+  for (const targetPath of targetPaths) {
+    const workspacePath = toWorkspacePath(rootDir, targetPath.trim());
+    if (!workspacePath || isIgnoredWorkspacePath(workspacePath)) {
+      continue;
+    }
+
+    const absolutePath = path.join(rootDir, workspacePath);
+    let stat: Awaited<ReturnType<typeof fs.stat>>;
+    try {
+      stat = await fs.stat(absolutePath);
+    } catch {
+      if (!seenMissing.has(workspacePath)) {
+        missingFiles.push(workspacePath);
+        seenMissing.add(workspacePath);
+      }
+      continue;
+    }
+
+    if (stat.isDirectory()) {
+      const discovered = await discoverFiles(absolutePath);
+      for (const file of discovered) {
+        const relative = path.relative(rootDir, file).replaceAll(path.sep, '/');
+        if (seenFiles.has(relative)) {
+          continue;
+        }
+        sourceFiles.push(file);
+        selectedSourceFiles.push(relative);
+        seenFiles.add(relative);
+      }
+      continue;
+    }
+
+    if (!stat.isFile() || !isAllowedWorkspaceFile(workspacePath)) {
+      continue;
+    }
+    if (seenFiles.has(workspacePath)) {
+      continue;
+    }
+    sourceFiles.push(absolutePath);
+    selectedSourceFiles.push(workspacePath);
+    seenFiles.add(workspacePath);
+  }
+
+  return { sourceFiles, missingFiles, selectedSourceFiles };
+}
+
 function extractImports(content: string): string[] {
   const imports = new Set<string>();
   const regex = /(?:import|export)\s+.*?from\s+['"](\.[^'"]+)['"]/g;
@@ -248,10 +325,13 @@ export async function runScan(
   sourceRoot: string,
   workspace: string,
   db: AtlasDatabase,
-  options?: { force?: boolean },
+  options?: { force?: boolean; targetPaths?: string[] },
 ): Promise<ScanResult> {
   const absoluteRoot = path.resolve(sourceRoot);
-  const sourceFiles = await discoverFiles(absoluteRoot);
+  const targetScan = options?.targetPaths && options.targetPaths.length > 0
+    ? await collectTargetFiles(absoluteRoot, options.targetPaths)
+    : null;
+  const sourceFiles = targetScan?.sourceFiles ?? await discoverFiles(absoluteRoot);
   const files: ScanFileInfo[] = [];
   const importEdges: AtlasImportEdgeRecord[] = [];
   const progress = createPhaseProgressReporter([{
@@ -352,7 +432,7 @@ export async function runScan(
     progress.complete('scan');
   }
 
-  replaceImportEdges(db, workspace, importEdges);
+  replaceImportEdges(db, workspace, importEdges, targetScan?.selectedSourceFiles);
   progress.finish(`scan complete: ${files.length} files, ${importEdges.length} edges`);
 
   return {
@@ -360,5 +440,6 @@ export async function runScan(
     rootDir: absoluteRoot,
     files,
     importEdges,
+    missingFiles: targetScan?.missingFiles ?? [],
   };
 }

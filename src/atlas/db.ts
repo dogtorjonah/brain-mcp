@@ -1756,14 +1756,27 @@ export function backfillSymbolsAndReferencesFromAtlasFiles(db: AtlasDatabase): v
   }
 }
 
-export function replaceImportEdges(db: AtlasDatabase, workspace: string, edges: AtlasImportEdgeRecord[]): void {
-  const deleteStmt = db.prepare('DELETE FROM import_edges WHERE workspace = ?');
+export function replaceImportEdges(
+  db: AtlasDatabase,
+  workspace: string,
+  edges: AtlasImportEdgeRecord[],
+  selectedSourceFiles?: Iterable<string>,
+): void {
+  const selectedSources = selectedSourceFiles ? [...new Set(selectedSourceFiles)] : null;
+  const deleteAllStmt = db.prepare('DELETE FROM import_edges WHERE workspace = ?');
+  const deleteSourceStmt = db.prepare('DELETE FROM import_edges WHERE workspace = ? AND source_file = ?');
   const insertStmt = db.prepare(
     'INSERT INTO import_edges (workspace, source_file, target_file) VALUES (?, ?, ?)',
   );
 
   const tx = db.transaction((batch: AtlasImportEdgeRecord[]) => {
-    deleteStmt.run(workspace);
+    if (selectedSources) {
+      for (const sourceFile of selectedSources) {
+        deleteSourceStmt.run(workspace, sourceFile);
+      }
+    } else {
+      deleteAllStmt.run(workspace);
+    }
     for (const edge of batch) {
       insertStmt.run(edge.workspace, edge.source_file, edge.target_file);
     }
