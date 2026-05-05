@@ -19,14 +19,36 @@
  */
 
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type Database from 'better-sqlite3';
 import { z } from 'zod';
 import { fuseCrossSilo, type SiloHit, type CrossSiloHit, type SiloKind } from './crossSiloFusion.js';
 import { resolveScope, applySiloFilter, type BrainSearchScope } from './scopeResolver.js';
+import {
+  appendStar,
+  formatStarTimestamp,
+  validateCategory,
+  safeTruncate,
+  STAR_CATEGORIES,
+  MAX_AMBIENT_NOTE_CHARS,
+  MAX_CATEGORIZED_NOTE_CHARS,
+} from '../stars/tapStars.js';
 
 // ── Input schema ───────────────────────────────────────────────────────
 
 const brainSearchSchema = {
-  query: z.string().describe('Natural language search query.'),
+  action: z
+    .enum(['search', 'star'])
+    .optional()
+    .describe("'search' (default): run cross-silo search. 'star': pin a cognitive waypoint for rebirth injection."),
+  query: z.string().describe('Natural language search query (required for action=search).'),
+  note: z
+    .string()
+    .optional()
+    .describe('Note text for action=star. Max 200 chars with category, 120 without.'),
+  category: z
+    .enum(['decision', 'discovery', 'pivot', 'handoff', 'gotcha', 'result'])
+    .optional()
+    .describe('Category for action=star. With category: persisted + rebirth-injected. Without: ephemeral ack only.'),
   scope: z
     .enum(['self', 'session', 'workspace', 'identity', 'atlas', 'transcripts', 'all'])
     .optional()
@@ -168,6 +190,9 @@ export interface SearchDependencies {
 
   /** Get current project slug from cwd. */
   getCurrentProjectSlug(): string | undefined;
+
+  /** Home DB instance (for star persistence). */
+  db: InstanceType<typeof Database>;
 }
 
 /**
@@ -179,7 +204,10 @@ export interface SearchDependencies {
 export function registerBrainSearchTool(server: McpServer, deps: SearchDependencies): void {
   server.tool('brain_search', brainSearchSchema, async (rawArgs) => {
     const args = rawArgs as {
+      action?: 'search' | 'star';
       query: string;
+      note?: string;
+      category?: string;
       scope?: BrainSearchScope;
       silos?: SiloKind[];
       k?: number;
@@ -189,6 +217,65 @@ export function registerBrainSearchTool(server: McpServer, deps: SearchDependenc
       candidate_pool?: number;
     };
 
+    // ── Star action (cognitive waypoint) ────────────────────────────
+    if (args.action === 'star') {
+      const rawNote = typeof args.note === 'string' ? args.note : '';
+      const note = rawNote.trim();
+
+      if (!note) {
+        return {
+          content: [{
+            type: 'text',
+            text: 'No note provided. Usage: brain_search action=star note="what happened" [category=decision]',
+          }],
+          isError: true,
+        };
+      }
+
+      // Validate category if provided.
+      const rawCategory = typeof args.category === 'string' ? args.category : undefined;
+      if (rawCategory !== undefined) {
+        const parsed = validateCategory(rawCategory);
+        if (!parsed) {
+          return {
+            content: [{
+              type: 'text',
+              text: `Invalid category "${rawCategory}". Valid: ${STAR_CATEGORIES.join(', ')}.`,
+            }],
+            isError: true,
+          };
+        }
+      }
+
+      const category = rawCategory ? validateCategory(rawCategory) : undefined;
+      const maxChars = category ? MAX_CATEGORIZED_NOTE_CHARS : MAX_AMBIENT_NOTE_CHARS;
+      const clippedNote = safeTruncate(note, maxChars);
+
+      // Without category: ephemeral — acknowledge but don't persist.
+      if (!category) {
+        return {
+          content: [{ type: 'text', text: `⭐ Noted: ${clippedNote}` }],
+        };
+      }
+
+      // With category: persist to Home DB for rebirth injection.
+      const identityName = deps.getCurrentIdentity() ?? 'unknown';
+      const sessionId = deps.getCurrentSessionId();
+
+      const star = appendStar(
+        deps.db,
+        identityName,
+        sessionId,
+        clippedNote,
+        category,
+      );
+
+      return {
+        content: [{ type: 'text', text: `⭐ Pinned [${category}]: ${star.note} (${formatStarTimestamp(star.ts)})` }],
+      };
+    }
+
+    // ── Search action (default) ─────────────────────────────────────
     const scope = args.scope ?? 'workspace';
     const k = args.k ?? 20;
     const candidatePool = args.candidate_pool ?? 50;

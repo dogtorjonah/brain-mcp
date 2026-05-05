@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# brain-claude: wrapper shim that lets brain_respawn relaunch Claude in-place.
+# brain-claude: wrapper shim that lets brain_rebirth relaunch Claude in-place.
 
 set -u
 
@@ -32,7 +32,7 @@ if [[ -n "$identity_flag" && -n "$new_identity_flag" ]]; then
   exit 2
 fi
 
-# Sidecar identity file — written by brain_respawn (or rebirth-mcp) to
+# Sidecar identity file — written by brain_rebirth (or rebirth-mcp) to
 # survive across wrapper relaunches. Per-wrapper-PID so sibling terminals
 # don't cross-fire. Read at startup (cold) and again each respawn loop
 # (mid-flight identity swap via /identity or "respawn as <name>").

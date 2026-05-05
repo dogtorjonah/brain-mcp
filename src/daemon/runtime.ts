@@ -37,7 +37,7 @@ export class BrainDaemonRuntime {
   withCallerContext<T>(context: CallerContext, fn: () => T): T {
     // Resolve (or auto-mint) the identity for this caller before any tool
     // runs. The result is mutated onto the context so getCurrentIdentity()
-    // and downstream tools (brain_respawn, brain_handoff, edges) all see a
+    // and downstream tools (brain_rebirth, brain_handoff, edges) all see a
     // real name instead of falling through to 'unknown'.
     this.ensureIdentityBound(context);
     return withCallerContext(context, fn);

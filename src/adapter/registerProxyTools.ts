@@ -5,9 +5,9 @@ import { ensureBrainDaemon } from './daemonProcess.js';
 import { buildCallerContext } from './env.js';
 import type { BrainToolResult, ToolDefinition } from '../daemon/protocol.js';
 import {
-  BRAIN_RESPAWN_ADAPTER_ACTION,
-  isBrainRespawnAdapterAction,
-} from '../tools/brain_respawn.js';
+  BRAIN_REBIRTH_ADAPTER_ACTION,
+  isBrainRebirthAdapterAction,
+} from '../tools/brain_rebirth.js';
 import { parentLooksLikeClaude, scheduleParentKill, spawnReplacementClaude } from '../io/selfSpawn.js';
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<BrainToolResult>;
@@ -55,15 +55,15 @@ export async function registerDaemonProxyTools(server: McpServer): Promise<void>
 }
 
 function executeAdapterActions(result: BrainToolResult): BrainToolResult {
-  const action = result._meta?.[BRAIN_RESPAWN_ADAPTER_ACTION];
-  if (!isBrainRespawnAdapterAction(action)) return result;
+  const action = result._meta?.[BRAIN_REBIRTH_ADAPTER_ACTION];
+  if (!isBrainRebirthAdapterAction(action)) return result;
 
   if (action.requireClaudeParent && !parentLooksLikeClaude(process.ppid)) {
     return {
       content: [{
         type: 'text',
         text:
-          'brain_respawn refused self-spawn because the adapter parent does not look like Claude. ' +
+          'brain_rebirth refused self-spawn because the adapter parent does not look like Claude. ' +
           'Launch through brain-claude for wrapper respawn, or retry with require_claude_parent=false.',
       }],
       isError: true,
@@ -94,7 +94,7 @@ function executeAdapterActions(result: BrainToolResult): BrainToolResult {
       content: [{
         type: 'text',
         text: [
-          'brain_respawn self-spawn scheduled.',
+          'brain_rebirth self-spawn scheduled.',
           `new_pid: ${spawnResult.newPid}`,
           `parent_pid: ${spawnResult.parentPid}`,
           `handoff_bytes: ${spawnResult.bytes}`,

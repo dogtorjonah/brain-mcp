@@ -75,7 +75,7 @@ Both use WAL mode for safe concurrent access.
 The `brain-claude` shell wrapper replaces `claude` as a function in your shell. It:
 
 1. Launches Claude Code normally
-2. Watches for a **respawn sentinel** written by `brain_respawn`
+2. Watches for a **respawn sentinel** written by `brain_rebirth`
 3. When Claude exits and a sentinel exists, reads the handoff file and relaunches Claude with it as the initial prompt
 4. Supports mid-flight identity swaps via sidecar files
 5. Passes through `--effort`, `--model`, and `--identity` flags across respawns
@@ -96,7 +96,7 @@ brain-mcp exposes **18 tools** to Claude Code, organized into three groups:
 | `brain_specialize` | Recompute the current identity's specialty signature |
 | `brain_recommend` | Rank identities by fitness for a task |
 | `brain_diff_identities` | Compare two identities side-by-side |
-| `brain_respawn` | Build a handoff packet + trigger wrapper relaunch |
+| `brain_rebirth` | Build a handoff packet + trigger wrapper relaunch |
 | `brain_handoff` | Build a rich diagnostic/archival handoff snapshot |
 | `brain_sop_candidates` | Discover repeated tool-call patterns worth promoting |
 | `identity_sop_promote` | Promote a discovered pattern into a standing SOP |
@@ -189,7 +189,7 @@ src/
 │   ├── brain_specialize.ts       # Specialty signature computation
 │   ├── brain_recommend.ts        # Identity fitness ranking
 │   ├── brain_diff_identities.ts  # Identity comparison
-│   ├── brain_respawn.ts          # Session respawn + wrapper relaunch
+│   ├── brain_rebirth.ts          # Session respawn + wrapper relaunch
 │   └── brain_handoff.ts          # Rich handoff snapshot builder
 ├── package/                      # Handoff package builder
 │   ├── build.ts                  # Section renderer

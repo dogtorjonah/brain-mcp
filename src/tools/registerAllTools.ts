@@ -40,7 +40,7 @@ export async function registerAllTools({ registry, runtime }: AllToolsDeps): Pro
   await registerOptionalMcpTool(registry, runtime, '../tools/brain_when_did.js', 'registerBrainWhenDidTool', brainToolDeps(runtime));
   await registerOptionalMcpTool(registry, runtime, '../tools/brain_specialize.js', 'registerBrainSpecializeTool', brainToolDeps(runtime));
 
-  await registerOptionalRuntimeTool(registry, runtime, '../tools/brain_respawn.js', 'registerBrainRespawnTool');
+  await registerOptionalRuntimeTool(registry, runtime, '../tools/brain_rebirth.js', 'registerBrainRebirthTool');
   await registerOptionalMcpTool(registry, runtime, '../tools/brain_handoff.js', 'registerBrainHandoffTool', brainToolDeps(runtime));
 }
 
@@ -85,6 +85,7 @@ async function registerBrainSearch(registry: ToolRegistry, runtime: BrainDaemonR
     getCurrentSessionId: () => runtime.getCurrentSessionId(),
     getCurrentIdentity: () => runtime.getCurrentIdentity(),
     getCurrentProjectSlug: () => runtime.getCurrentProjectSlug(),
+    db: runtime.homeDb.db,
   });
 }
 

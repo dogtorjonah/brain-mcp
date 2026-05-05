@@ -26,6 +26,10 @@ import {
   type TranscriptFileRef,
   type TranscriptIndexResult,
 } from '../search/transcriptSearch.js';
+import {
+  loadCategorizedStars,
+  formatStarredMomentsForRebirth,
+} from '../stars/tapStars.js';
 
 interface BrainHandoffArgs {
   session_id?: string;
@@ -122,7 +126,7 @@ async function handleBrainHandoff(
 /**
  * Result of {@link buildRichHandoff}. The `ok: false` branch carries a human
  * reason (used as both the error message in `brain_handoff` and the signal to
- * `brain_respawn` that it should fall back to the sparse builder).
+ * `brain_rebirth` that it should fall back to the sparse builder).
  */
 export type RichHandoffResult =
   | {
@@ -137,6 +141,7 @@ export type RichHandoffResult =
         stats: Record<string, unknown>;
         identity_snapshot: ReturnType<typeof buildIdentitySnapshot>;
         atlas_inlay: AtlasInlayEntry[];
+        starred_moments: string | null;
         lifetime_changelog_arc: string | null;
       };
     }
@@ -144,7 +149,7 @@ export type RichHandoffResult =
 
 /**
  * Build the full rich-handoff markdown plus structured snapshot, exactly as
- * `brain_handoff` would emit it. Factored out so `brain_respawn` can dump the
+ * `brain_handoff` would emit it. Factored out so `brain_rebirth` can dump the
  * rich content into the wrapper handoff file instead of the sparse fallback.
  *
  * Returns `{ ok: false }` when no transcript can be found for the cwd — caller
@@ -233,9 +238,21 @@ export async function buildRichHandoff(
 
   const lifetimeArc = buildLifetimeArc(deps, identityName, cwd, reduced);
 
+  // Load categorized stars for rebirth injection.
+  let starredMomentsSection: string | null = null;
+  try {
+    const stars = loadCategorizedStars(deps.homeDb.db, identityName);
+    if (stars.length > 0) {
+      starredMomentsSection = formatStarredMomentsForRebirth(stars);
+    }
+  } catch {
+    // Starred moments are additive context — missing table should not block handoff.
+  }
+
   const markdown = [
     built.markdown,
     atlasInlay.length > 0 ? renderAtlasInlay(atlasInlay) : '',
+    starredMomentsSection ? renderStarredMoments(starredMomentsSection) : '',
     lifetimeArc ? renderLifetimeArc(lifetimeArc) : '',
   ].filter(Boolean).join('\n');
 
@@ -255,6 +272,7 @@ export async function buildRichHandoff(
       },
       identity_snapshot: identitySnapshot,
       atlas_inlay: atlasInlay,
+      starred_moments: starredMomentsSection,
       lifetime_changelog_arc: lifetimeArc ?? null,
     },
   };
@@ -441,6 +459,10 @@ function buildLifetimeArc(
   });
 
   return digest.trim() ? digest : null;
+}
+
+function renderStarredMoments(section: string): string {
+  return ['── Starred Moments (curated tap_star waypoints) ──', '', section].join('\n');
 }
 
 function renderLifetimeArc(digest: string): string {

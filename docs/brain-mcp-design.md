@@ -188,7 +188,7 @@ Mostly the existing rebirth surface, with one big refinement: every tool now rea
 | `identity_fork` | Mint a new identity that inherits some-or-all of an existing one's specialty signature. The fork's chain.jsonl records `forked_from`. |
 
 Removed from the original rebirth surface:
-- Nothing actually. The deprecated `rebirth_respawn` becomes `brain_respawn` to fit the namespace; semantics unchanged.
+- Nothing actually. The deprecated `rebirth_respawn` becomes `brain_rebirth` to fit the namespace; semantics unchanged.
 
 ### 4.3 `atlas_*` cluster
 
@@ -225,7 +225,7 @@ This is where the merger pays off. Each tool here is impossible (or absurdly slo
 | `brain_diff_identities` | "Identity A and B both touch cluster C; where do their patterns / hazards differ?" Useful for collaboration auditing. | Diff on edge counts and pattern frequency. |
 | `brain_when_did` | Time-traveling debug. "When did hazard H first appear on file F? When did pattern P first land?" Returns timestamp, identity, original commit summary. | Ordered scan of edges with predicate. |
 | `brain_sop_candidates` | List auto-discovered SOP candidates for an identity, with frequency stats and example sessions. | Aggregations over `sop_candidates`. |
-| `brain_respawn` | Trigger rebirth-claude wrapper respawn with a structured handoff. Replaces `rebirth_respawn`. | Writes sentinel + JSON handoff file. |
+| `brain_rebirth` | Trigger rebirth-claude wrapper respawn with a structured handoff. Replaces `rebirth_respawn`. | Writes sentinel + JSON handoff file. |
 | `brain_search` | The pure transcript-side search (today's `rebirth_search`), kept for back-compat. New code should prefer `brain_recall`. | BM25 + vector on `transcript_chunks`. |
 
 ---

@@ -36,7 +36,7 @@ export const END_SHIM_SENTINEL = '# <<< brain-mcp shim <<<';
  */
 export const SHIM_BODY = [
   BEGIN_SHIM_SENTINEL,
-  '# Transparently wrap `claude` so brain_respawn can relaunch it in-place.',
+  '# Transparently wrap `claude` so brain_rebirth can relaunch it in-place.',
   '# Safe to remove with: brain uninstall-shim',
   'claude() {',
   '  if command -v brain-claude >/dev/null 2>&1; then',

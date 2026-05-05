@@ -5,9 +5,9 @@ import { isRecord, safeJsonStringify } from '../daemon/protocol.js';
 import { scheduleRespawnKill, writeRespawnSentinel, type RespawnChannel } from '../io/respawn.js';
 import { buildRichHandoff } from './brain_handoff.js';
 
-export const BRAIN_RESPAWN_ADAPTER_ACTION = 'brain_respawn_adapter_action';
+export const BRAIN_REBIRTH_ADAPTER_ACTION = 'brain_rebirth_adapter_action';
 
-interface BrainRespawnAdapterAction {
+interface BrainRebirthAdapterAction {
   kind: 'self-spawn';
   handoffMarkdown: string;
   cwd: string;
@@ -25,19 +25,19 @@ interface WrapperTarget {
   channel: RespawnChannel;
 }
 
-export function registerBrainRespawnTool(registry: ToolRegistry, runtime: BrainDaemonRuntime): void {
+export function registerBrainRebirthTool(registry: ToolRegistry, runtime: BrainDaemonRuntime): void {
   registry.register(
     {
-      name: 'brain_respawn',
+      name: 'brain_rebirth',
       description:
         'Respawn Claude with a structured Brain handoff. Uses the brain-claude wrapper when available, ' +
         'or asks the stdio adapter to perform a guarded self-spawn.',
     },
-    async (args, caller) => handleBrainRespawn(runtime, args, caller),
+    async (args, caller) => handleBrainRebirth(runtime, args, caller),
   );
 }
 
-async function handleBrainRespawn(
+async function handleBrainRebirth(
   runtime: BrainDaemonRuntime,
   args: Record<string, unknown>,
   caller: CallerContext,
@@ -71,7 +71,7 @@ async function handleBrainRespawn(
   }
 
   const handoffMarkdown = readString(args.handoff_markdown) ?? readString(args.handoff) ??
-    await buildRespawnHandoffMarkdown(runtime, caller, args);
+    await buildRebirthHandoffMarkdown(runtime, caller, args);
 
   if (method !== 'self-spawn' && wrapperTarget) {
     const write = writeRespawnSentinel({
@@ -87,7 +87,7 @@ async function handleBrainRespawn(
     });
 
     scheduleRespawnKill(wrapperTarget.wrapperPid, killDelayMs);
-    recordRespawnEvent(runtime, caller, identityName, {
+    recordRebirthEvent(runtime, caller, identityName, {
       method: 'wrapper',
       channel: wrapperTarget.channel,
       wrapperPid: wrapperTarget.wrapperPid,
@@ -113,7 +113,7 @@ async function handleBrainRespawn(
       content: [{
         type: 'text',
         text: [
-          'brain_respawn scheduled via wrapper.',
+          'brain_rebirth scheduled via wrapper.',
           `channel: ${wrapperTarget.channel}`,
           `wrapper_pid: ${wrapperTarget.wrapperPid}`,
           `sentinel: ${write.sentinelPath}`,
@@ -129,14 +129,14 @@ async function handleBrainRespawn(
       content: [{
         type: 'text',
         text:
-          'brain_respawn requires brain-claude wrapper env for method=wrapper. ' +
+          'brain_rebirth requires brain-claude wrapper env for method=wrapper. ' +
           'Launch Claude through brain-claude or install the shell shim.',
       }],
       isError: true,
     };
   }
 
-  const action: BrainRespawnAdapterAction = {
+  const action: BrainRebirthAdapterAction = {
     kind: 'self-spawn',
     handoffMarkdown,
     cwd: readString(args.cwd) ?? caller.cwd,
@@ -146,7 +146,7 @@ async function handleBrainRespawn(
     requireClaudeParent: readBoolean(args.require_claude_parent) ?? true,
   };
 
-  recordRespawnEvent(runtime, caller, identityName, {
+  recordRebirthEvent(runtime, caller, identityName, {
     method: 'self-spawn',
     cwd: action.cwd,
     bytes: Buffer.byteLength(handoffMarkdown, 'utf8'),
@@ -165,11 +165,11 @@ async function handleBrainRespawn(
     content: [{
       type: 'text',
       text:
-        'brain_respawn prepared a self-spawn handoff. The stdio adapter will perform the guarded terminal takeover.',
+        'brain_rebirth prepared a self-spawn handoff. The stdio adapter will perform the guarded terminal takeover.',
     }],
     structuredContent,
     _meta: {
-      [BRAIN_RESPAWN_ADAPTER_ACTION]: action,
+      [BRAIN_REBIRTH_ADAPTER_ACTION]: action,
     },
   };
 }
@@ -186,7 +186,7 @@ async function handleBrainRespawn(
  * transcript exists for this cwd. respawn surfaces the failure to the caller
  * rather than ferrying a degraded handoff into the next session.
  */
-async function buildRespawnHandoffMarkdown(
+async function buildRebirthHandoffMarkdown(
   runtime: BrainDaemonRuntime,
   caller: CallerContext,
   args: Record<string, unknown>,
@@ -214,7 +214,7 @@ async function buildRespawnHandoffMarkdown(
   );
 
   if (!rich.ok) {
-    throw new Error(`brain_respawn: rich handoff unavailable — ${rich.reason}`);
+    throw new Error(`brain_rebirth: rich handoff unavailable — ${rich.reason}`);
   }
 
   return prependActiveTaskNote(rich.markdown, explicitNote);
@@ -258,7 +258,7 @@ function resolveIdentity(
     'unknown';
 }
 
-function recordRespawnEvent(
+function recordRebirthEvent(
   runtime: BrainDaemonRuntime,
   caller: CallerContext,
   identityName: string,
@@ -310,7 +310,7 @@ function readStringArray(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.length > 0);
 }
 
-export function isBrainRespawnAdapterAction(value: unknown): value is BrainRespawnAdapterAction {
+export function isBrainRebirthAdapterAction(value: unknown): value is BrainRebirthAdapterAction {
   return isRecord(value) &&
     value.kind === 'self-spawn' &&
     typeof value.handoffMarkdown === 'string' &&
