@@ -75,8 +75,6 @@ class NativeGrepIndex {
         continue;
       }
       if (st.isDirectory()) {
-        // Also skip relay/scripts/codebase-atlas
-        if (relPath === 'relay/scripts/codebase-atlas') continue;
         this.walkDir(absPath, relPath);
       } else if (st.isFile()) {
         const ext = path.extname(entry);
@@ -360,9 +358,8 @@ function runGrep(symbolName: string, sourceRoot: string, definingFile: string, c
       '!**/*.json',
       '--glob',
       '!**/.brain/**',
-      '!**/.atlas/**',
       '--glob',
-      '!**/relay/scripts/codebase-atlas/**',
+      '!**/.atlas/**',
       symbolName,
       '.',
     ], {

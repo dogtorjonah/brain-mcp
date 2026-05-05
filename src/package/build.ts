@@ -142,8 +142,8 @@ export function buildHandoff(reduced: ReducedTranscript, opts: BuildOptions = {}
   // subprocess shelling doesn't block the fast sections above if git
   // hangs (the 2s timeout in gitStatus.ts still applies as a hard cap).
   //
-  // Multi-repo: if the session edited files outside the primary cwd's
-  // repo (e.g. voxxo-swarm session that also touched /home/jonah/rebirth-mcp),
+  // Multi-repo: if the session edited files outside the primary cwd's repo
+  // (for example, a local integration session that touched a sibling repo),
   // capture a snapshot for every unique repo root we can resolve from the
   // file-context paths. Dedup by resolved repo root so cwd and its
   // subdirs collapse to one entry.

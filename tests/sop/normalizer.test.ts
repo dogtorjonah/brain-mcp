@@ -28,7 +28,7 @@ describe('normalizer: extractPrimaryArg — file paths and Bash', () => {
   });
 
   it('path key works', () => {
-    const result = extractPrimaryArg('Write', { path: '/home/jonah/project/src/index.ts' });
+    const result = extractPrimaryArg('Write', { path: '/tmp/project/src/index.ts' });
     expect(result).toBe('src/index.ts');
   });
 

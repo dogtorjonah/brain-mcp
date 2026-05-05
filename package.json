@@ -4,6 +4,17 @@
   "type": "module",
   "description": "Standalone MCP brain for Claude Code: identity, transcripts, Atlas code memory, synapse edges, and unified search.",
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/dogtorjonah/brain-mcp.git"
+  },
+  "homepage": "https://github.com/dogtorjonah/brain-mcp",
+  "bugs": {
+    "url": "https://github.com/dogtorjonah/brain-mcp/issues"
+  },
+  "engines": {
+    "node": ">=18"
+  },
   "main": "dist/bin/brain-mcp.js",
   "bin": {
     "brain-mcp": "./dist/bin/brain-mcp.js",
@@ -14,7 +25,6 @@
   "files": [
     "dist",
     "bin",
-    "docs",
     "migrations"
   ],
   "scripts": {

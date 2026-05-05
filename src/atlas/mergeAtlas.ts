@@ -10,6 +10,7 @@
  *   - FTS indexes:    rebuilt for touched records.
  */
 
+import { execFileSync } from 'node:child_process';
 import path from 'node:path';
 import fs from 'node:fs';
 import type { AtlasDatabase } from './db.js';
@@ -43,6 +44,62 @@ export interface AtlasMergePreview {
   changelogPreview: Array<{ file_path: string; summary: string; created_at: string }>;
 }
 
+function parseGitWorktrees(sourceRoot: string): Array<{ worktreePath: string; branch: string }> {
+  let output: string;
+  try {
+    output = execFileSync('git', ['-C', sourceRoot, 'worktree', 'list', '--porcelain'], {
+      encoding: 'utf8',
+      maxBuffer: 1024 * 1024,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+  } catch {
+    return [];
+  }
+
+  const results: Array<{ worktreePath: string; branch: string }> = [];
+  const blocks = output.split(/\n(?=worktree )/);
+  const primaryRoot = path.resolve(sourceRoot);
+  for (const block of blocks) {
+    let worktreePath = '';
+    let branch = '';
+    for (const line of block.split('\n')) {
+      if (line.startsWith('worktree ')) {
+        worktreePath = path.resolve(line.slice('worktree '.length).trim());
+      } else if (line.startsWith('branch ')) {
+        const ref = line.slice('branch '.length).trim();
+        branch = ref.startsWith('refs/heads/') ? ref.slice('refs/heads/'.length) : ref;
+      }
+    }
+    if (!worktreePath || worktreePath === primaryRoot) continue;
+    results.push({
+      worktreePath,
+      branch: branch || path.basename(worktreePath),
+    });
+  }
+  return results;
+}
+
+function resolveExplicitAtlasSource(
+  sourceRoot: string,
+  source: string,
+): { dbPath: string; label: string } | { error: string } {
+  const absPath = path.resolve(sourceRoot, source);
+  if (!fs.existsSync(absPath)) {
+    return { error: `Source database not found: ${absPath}` };
+  }
+
+  const stat = fs.statSync(absPath);
+  if (stat.isDirectory()) {
+    const existing = resolveExistingAtlasDbPath(absPath);
+    if (!existing) {
+      return { error: `No Atlas database found in directory: ${absPath}` };
+    }
+    return { dbPath: existing.dbPath, label: absPath };
+  }
+
+  return { dbPath: absPath, label: absPath };
+}
+
 // ---------------------------------------------------------------------------
 // Merge logic
 // ---------------------------------------------------------------------------
@@ -62,30 +119,17 @@ export function discoverWorktreeAtlases(sourceRoot: string): Array<{
     branch: string;
   }> = [];
 
-  const worktreesDir = path.join(sourceRoot, '.voxxo-swarm', 'worktrees', 'chambers');
-  if (!fs.existsSync(worktreesDir)) return results;
-
-  try {
-    const chambers = fs.readdirSync(worktreesDir, { withFileTypes: true });
-    for (const chamber of chambers) {
-      if (!chamber.isDirectory()) continue;
-      const sharedDir = path.join(worktreesDir, chamber.name, 'shared');
-      const existing = resolveExistingAtlasDbPath(sharedDir);
-      if (!existing) continue;
-
-      // Extract branch name from the directory structure: evolve/<id>
-      const branch = `evolve/${chamber.name}`;
-      results.push({
-        worktreePath: sharedDir,
-        dbPath: existing.dbPath,
-        branch,
-      });
-    }
-  } catch {
-    // permission errors etc.
+  for (const worktree of parseGitWorktrees(sourceRoot)) {
+    const existing = resolveExistingAtlasDbPath(worktree.worktreePath);
+    if (!existing) continue;
+    results.push({
+      worktreePath: worktree.worktreePath,
+      dbPath: existing.dbPath,
+      branch: worktree.branch,
+    });
   }
 
-  return results;
+  return results.sort((left, right) => left.branch.localeCompare(right.branch));
 }
 
 /**
@@ -96,33 +140,33 @@ export function resolveSourceDb(
   sourceRoot: string,
   source: string,
 ): { dbPath: string; label: string } | { error: string } {
-  // 1. Explicit path (absolute or relative to sourceRoot)
-  if (source.startsWith('/') || source.startsWith('./') || source.endsWith('.sqlite')) {
-    const absPath = path.resolve(sourceRoot, source);
-    if (!fs.existsSync(absPath)) {
-      return { error: `Source database not found: ${absPath}` };
-    }
-    return { dbPath: absPath, label: absPath };
+  // 1. Explicit path (absolute or relative to sourceRoot). Directories are
+  // resolved through the normal brain-mcp / legacy Atlas DB locator.
+  const explicitPath =
+    path.isAbsolute(source)
+    || source.startsWith('./')
+    || source.startsWith('../')
+    || source.endsWith('.sqlite');
+  if (explicitPath || fs.existsSync(path.resolve(sourceRoot, source))) {
+    return resolveExplicitAtlasSource(sourceRoot, source);
   }
 
-  // 2. Full branch name like "evolve/TABNDPgU1Ne8" or just the ID "TABNDPgU1Ne8"
-  const chamberId = source.startsWith('evolve/') ? source.slice(7) : source;
-  const worktreeDir = path.join(
-    sourceRoot,
-    '.voxxo-swarm', 'worktrees', 'chambers', chamberId, 'shared',
+  // 2. Git worktree branch name or worktree directory basename.
+  const normalizedSource = source.startsWith('refs/heads/') ? source.slice('refs/heads/'.length) : source;
+  const available = discoverWorktreeAtlases(sourceRoot);
+  const match = available.find((worktree) =>
+    worktree.branch === normalizedSource
+    || path.basename(worktree.worktreePath) === normalizedSource
   );
-  const existing = resolveExistingAtlasDbPath(worktreeDir);
-  if (!existing) {
-    // Try listing available worktrees
-    const available = discoverWorktreeAtlases(sourceRoot);
+  if (!match) {
     if (available.length === 0) {
-      return { error: `No worktree Atlas databases found. Pass an explicit path or worktree ID.` };
+      return { error: 'No git worktree Atlas databases found. Pass an explicit path to an Atlas database or indexed workspace.' };
     }
     const names = available.map((w) => w.branch).join(', ');
     return { error: `Worktree "${source}" not found. Available: ${names}` };
   }
 
-  return { dbPath: existing.dbPath, label: `evolve/${chamberId}` };
+  return { dbPath: match.dbPath, label: match.branch };
 }
 
 /**

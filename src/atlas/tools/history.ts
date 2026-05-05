@@ -112,10 +112,9 @@ export async function runHistoryTool(runtime: AtlasRuntime, {
   const authorNameValue = author_name ?? authorName;
   const authorIdentityValue = author_identity ?? authorIdentity;
   const verificationValue = verification_status ?? verificationStatus;
-  // Cap raised 200 -> 2000. The voxxo-swarm changelog already carries nearly
-  // 1000 entries after ~6 days; a 200 ceiling silently hid ~80% of workspace
-  // history from any caller asking for the full log. 2000 is a safety rail,
-  // not an expected working value — default stays at 20.
+  // Cap raised 200 -> 2000 after real-world changelogs exceeded the old
+  // ceiling quickly; 2000 is a safety rail, not an expected working value.
+  // The default stays at 20.
   const maxResults = Math.max(1, Math.min(limit ?? 20, 2000));
 
   const entries = queryAtlasChangelog(context.db, {

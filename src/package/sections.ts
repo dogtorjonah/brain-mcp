@@ -649,9 +649,9 @@ function hotLine(ev: NormalizedEvent, alloc: number): string {
       const inp = ev.input ?? {};
       // Per-body-type byte caps: long bash commands, full file_paths, and
       // hefty patterns each get their own ceiling so the hot-line preview
-      // stays readable without dropping the lead value. Mirrors the
-      // voxxo-swarm HOT_EDIT / HOT_COMMAND / HOT_TEXT split, adapted to
-      // tool-input preview keys.
+      // stays readable without dropping the lead value. Kept separate by
+      // preview kind so file paths, commands, and text patterns each have a
+      // useful ceiling.
       const previewCaps: Record<string, number> = {
         file_path: 200,
         command: 180,

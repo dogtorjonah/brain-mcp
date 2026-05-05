@@ -52,7 +52,7 @@ interface AdminArgs {
   sourceRoot?: string;
   confirm?: boolean;
   phase?: 'crossref';
-  /** Source Atlas to merge FROM — worktree ID (e.g. "TABNDPgU1Ne8"), branch ("evolve/TABNDPgU1Ne8"), or absolute DB path. */
+  /** Source Atlas to merge FROM — git worktree branch/name, indexed workspace path, or absolute DB path. */
   source?: string;
   /** For init: forcibly claim an existing un-marked DB as brain-mcp's. */
   force?: boolean;

@@ -79,8 +79,7 @@ export class HomeDb {
 
     // Run migrations.
     const migrationsDir = opts.migrationsDir ?? join(DEFAULT_BRAIN_DIR, '..', 'brain-mcp', 'migrations', 'home');
-    // In development, migrations live relative to the package:
-    // /home/jonah/brain-mcp/migrations/home/
+    // In development, migrations live relative to the package checkout.
     const devMigrationsDir = opts.migrationsDir ?? join(process.cwd(), 'migrations', 'home');
 
     let dir = migrationsDir;

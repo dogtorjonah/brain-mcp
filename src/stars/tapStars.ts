@@ -8,8 +8,7 @@
  *      packages so a successor sees a curated highlight reel.
  *
  * Storage: SQLite `starred_moments` table in the Home DB.
- * Mirrors voxxo-swarm's relay/src/persistence/tapStars.ts but uses SQLite
- * instead of JSONL files to match brain-mcp's storage patterns.
+ * Uses SQLite instead of JSONL files to match brain-mcp's storage patterns.
  */
 
 import type Database from 'better-sqlite3';

@@ -3,8 +3,10 @@ dist/
 coverage/
 *.tsbuildinfo
 
+.claude/
 .brain/
 .atlas/
+docs/brain-mcp-design.md
 *.sqlite
 *.sqlite-shm
 *.sqlite-wal

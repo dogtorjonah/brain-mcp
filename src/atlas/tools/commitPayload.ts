@@ -167,10 +167,9 @@ function parseJsonIfString<T = unknown>(value: T): unknown {
 }
 
 // Per-entry length cap for pattern/hazard/convention/key_type/data_flow strings.
-// Borrowed from vet-soap's sanitizer pattern (clamp-after-parse). Prevents an
-// agent from pasting a paragraph as a single "pattern" entry and polluting
-// stored metadata. 200 chars is generous for a label — patterns like
-// "singleton with lazy init" fit comfortably.
+// Clamp-after-parse prevents an agent from pasting a paragraph as a single
+// "pattern" entry and polluting stored metadata. 200 chars is generous for a
+// label — patterns like "singleton with lazy init" fit comfortably.
 const LIST_ENTRY_MAX_CHARS = 200;
 // Blurb/purpose length caps. Blurb is tweet-length display; purpose is 1-2
 // sentences. Clamps here catch agents who pass a changelog where a blurb
