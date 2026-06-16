@@ -12,6 +12,12 @@ export interface AtlasKeyTypeEntry {
   description?: string;
 }
 
+export interface AtlasHazardWithRange {
+  text: string;
+  startLine?: number | null;
+  endLine?: number | null;
+}
+
 /**
  * AI-curated source code snippet. During atlas_commit, the agent selects the
  * most important/relevant sections of the file — potentially disjointed segments
@@ -49,10 +55,12 @@ export interface AtlasFileExtraction {
   public_api: AtlasPublicApiEntry[];
   exports?: Array<{ name: string; type: string }>;
   patterns: string[];
+  tags: string[];
   dependencies: Record<string, unknown>;
   data_flows: string[];
   key_types: AtlasKeyTypeEntry[];
   hazards: string[];
+  hazards_with_ranges?: AtlasHazardWithRange[];
   conventions: string[];
 }
 
@@ -90,10 +98,12 @@ export interface AtlasFileRecord {
   public_api: unknown[];
   exports: Array<{ name: string; type: string }>;
   patterns: string[];
+  tags: string[];
   dependencies: Record<string, unknown>;
   data_flows: string[];
   key_types: unknown[];
   hazards: string[];
+  hazards_with_ranges: AtlasHazardWithRange[];
   conventions: string[];
   cross_refs: AtlasCrossRefs | null;
   source_highlights: SourceHighlight[];
@@ -117,6 +127,42 @@ export interface AtlasQueueRecord {
   completed_at: string | null;
   status: string;
   error_message: string | null;
+}
+
+export type AtlasFileWitnessInteraction =
+  | 'read'
+  | 'searched'
+  | 'edited'
+  | 'committed'
+  | 'reviewed'
+  | 'discussed'
+  | 'claimed'
+  | 'other';
+
+export interface AtlasFileWitnessEvidence {
+  interaction: AtlasFileWitnessInteraction;
+  eventId: string | null;
+  turnId: string | null;
+  toolName: string | null;
+  createdAt: string;
+}
+
+export interface AtlasFileWitnessRecord {
+  id: number;
+  workspace: string;
+  file_path: string;
+  instance_id: string;
+  instance_name: string | null;
+  engine: string | null;
+  interaction_counts: Partial<Record<AtlasFileWitnessInteraction, number>>;
+  evidence: AtlasFileWitnessEvidence[];
+  confidence: number;
+  first_seen_at: string;
+  last_seen_at: string;
+  last_event_id: string | null;
+  last_turn_id: string | null;
+  last_tool: string | null;
+  last_interaction: AtlasFileWitnessInteraction;
 }
 
 export interface AtlasMetaRecord {

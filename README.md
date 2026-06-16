@@ -7,7 +7,7 @@
 brain-mcp gives Claude Code a **persistent, self-improving memory** that survives across sessions and context rebirths with zero cloud dependencies:
 
 - **Identity tracking** — named agent identities with specialty signatures, SOPs, handoff notes, and a full lineage of who touched what file and when
-- **Codebase Atlas** — per-repo code intelligence graph storing purpose, hazards, patterns, public API, import edges, clusters, and changelog for every source file
+- **Codebase Atlas** — per-repo code intelligence graph storing purpose, hazards, patterns, public API, import edges, clusters, changelog, file witnesses, retained source snapshots, and optional operator-memory candidates
 - **Hybrid search** — BM25 + 384-dim vector embeddings (local ONNX, no API calls) across transcripts, atlas files, changelogs, and source highlights
 - **Session respawn** — when context fills up, builds a structured handoff packet and relaunches Claude in a fresh session via the `brain-claude` wrapper
 - **SOP discovery** — detects repeated tool-call patterns and promotes them into standing operating procedures
@@ -66,7 +66,7 @@ All data lives in **local SQLite databases** — no cloud, no API calls for memo
 | Database | Location | Contents |
 |----------|----------|----------|
 | **Home DB** | `~/.brain/brain.sqlite` | Identity profiles, chain events, SOPs, handoff notes, specialty signatures, synapse edges, transcript search index |
-| **Atlas DB** | `<repo>/.brain/atlas.sqlite` | Per-repository code intelligence (file metadata, changelog, import edges, clusters, source highlights) |
+| **Atlas DB** | `<repo>/.brain/atlas.sqlite` | Per-repository code intelligence (file metadata, changelog, import edges, clusters, source highlights, file witnesses, snapshots, operator-memory candidates) |
 
 Both use WAL mode for safe concurrent access.
 
@@ -82,7 +82,7 @@ The `brain-claude` shell wrapper replaces `claude` as a function in your shell. 
 
 ## Tools
 
-brain-mcp exposes **18 tools** to Claude Code, organized into three groups:
+brain-mcp exposes brain and SOP tools plus an embedded Atlas surface to Claude Code:
 
 ### Brain tools
 
@@ -101,16 +101,23 @@ brain-mcp exposes **18 tools** to Claude Code, organized into three groups:
 | `brain_sop_candidates` | Discover repeated tool-call patterns worth promoting |
 | `identity_sop_promote` | Promote a discovered pattern into a standing SOP |
 
-### Atlas tools (composite — 5 tools, 20+ actions)
+### Atlas tools
 
 | Tool | Actions | Purpose |
 |------|---------|---------|
-| `atlas_query` | `search`, `lookup`, `brief`, `snippet`, `similar`, `plan_context`, `cluster`, `patterns`, `history` | Codebase discovery, inspection, and structured context |
+| `atlas_query` | `search`, `lookup`, `brief`, `snippet`, `similar`, `plan_context`, `cluster`, `patterns`, `history`, `catalog`, `ask` | Codebase discovery, inspection, broad catalog paging, and cited evidence bundles |
 | `atlas_graph` | `impact`, `neighbors`, `trace`, `cycles`, `reachability`, `graph`, `cluster` | Dependency analysis, blast radius, import/call graphs |
 | `atlas_audit` | `gaps`, `smells`, `hotspots` | Quality and risk scanning |
-| `atlas_admin` | `init`, `reset`, `reindex`, `bridge_list`, `merge` | Atlas maintenance and workspace discovery |
+| `atlas_admin` | `init`, `reset`, `reindex`, `bridge_list`, `merge` | Atlas maintenance, migrations, workspace discovery, and worktree Atlas merges |
 | `atlas_changelog` | `query` | File-level changelog queries (writing is via `atlas_commit`) |
-| `atlas_commit` | — | Post-edit metadata writeback (purpose, hazards, patterns, changelog) |
+| `atlas_commit` | — | Post-edit metadata writeback (purpose, hazards, patterns, changelog, optional `operator_memory` candidates) |
+| `atlas_diff` | — | Compare retained Atlas file snapshots by changelog ID, timestamp, `prev`, or `latest` endpoint |
+| `atlas_changelog_diff` | — | Show the source diff associated with a single Atlas changelog row |
+| `atlas_snapshot` | — | Read source content from a retained snapshot or reconstructable changelog endpoint |
+| `atlas_worktree_status` | — | Compare the live worktree against Atlas remembered source snapshots |
+| `atlas_worktree_diff` | — | Diff live worktree files against Atlas remembered source snapshots |
+
+`operator_memory` entries are stored as candidate observations beside the relevant changelog row. They are for stable operator preferences, workflow instincts, boundaries, corrections, project taste, or durable context, and are not treated as canon until separately reviewed.
 
 ## Source layout
 
@@ -151,12 +158,15 @@ src/
 │   │   ├── flow.ts               # Pipeline orchestration
 │   │   └── treesitter.ts         # Tree-sitter grammar loading
 │   └── tools/                    # Atlas tool implementations
-│       ├── query.ts              # Composite: search/lookup/brief/snippet/similar/plan_context
+│       ├── query.ts              # Composite: search/lookup/brief/snippet/similar/plan_context/catalog/ask
 │       ├── graphComposite.ts     # Composite: impact/neighbors/trace/cycles/reachability
 │       ├── audit.ts              # Composite: gaps/smells/hotspots
 │       ├── admin.ts              # Composite: init/reset/reindex/bridge_list/merge
 │       ├── commit.ts             # Post-edit metadata writeback
+│       ├── commitPayload.ts      # atlas_commit payload normalization and compatibility aliases
 │       ├── changelog.ts          # Changelog query tool
+│       ├── diff.ts               # Snapshot, changelog diff, and snapshot-read tools
+│       ├── worktree.ts           # Atlas-vs-live-worktree status/diff tools
 │       └── bridge.ts             # Cross-workspace bridge discovery
 ├── home/                         # Home database
 │   └── db.ts                     # ~/.brain/brain.sqlite connection + migrations

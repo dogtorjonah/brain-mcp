@@ -1,5 +1,5 @@
 /**
- * atlas_admin — composite admin/ops tool for atlas-mcp-server.
+ * atlas_admin — composite admin/ops tool for brain-mcp Atlas.
  *
  * Consolidates operational tools into a single action-dispatched interface:
  *   - init: nuke the database and reindex from scratch (destructive).

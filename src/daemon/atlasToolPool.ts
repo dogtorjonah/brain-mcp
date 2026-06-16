@@ -6,12 +6,17 @@ import { normalizeError } from './protocol.js';
 import { ToolRegistry } from './toolRegistry.js';
 
 const ATLAS_TOOL_DEFINITIONS: ToolDefinition[] = [
-  { name: 'atlas_changelog', description: 'Query and maintain Atlas changelog entries for the caller workspace.' },
+  { name: 'atlas_changelog', description: 'Query Atlas changelog history for the caller workspace.' },
   { name: 'atlas_commit', description: 'Record Atlas file metadata and changelog context.' },
-  { name: 'atlas_query', description: 'Search, inspect, and retrieve Atlas knowledge.' },
+  { name: 'atlas_diff', description: 'Compare Atlas file snapshots by changelog ID, timestamp, prev, or latest endpoint.' },
+  { name: 'atlas_changelog_diff', description: 'Show the source diff associated with an Atlas changelog row.' },
+  { name: 'atlas_snapshot', description: 'Read source content from a retained Atlas snapshot or reconstructable changelog endpoint.' },
+  { name: 'atlas_worktree_status', description: 'Compare the live worktree against Atlas remembered source snapshots.' },
+  { name: 'atlas_worktree_diff', description: 'Diff live worktree files against Atlas remembered source snapshots.' },
+  { name: 'atlas_query', description: 'Search, inspect, catalog, and retrieve cited Atlas knowledge.' },
   { name: 'atlas_graph', description: 'Run Atlas dependency graph and reachability analysis.' },
   { name: 'atlas_audit', description: 'Run Atlas quality, gap, smell, and hotspot analysis.' },
-  { name: 'atlas_admin', description: 'Manage Atlas indexing, migrations, bridge discovery, and maintenance.' },
+  { name: 'atlas_admin', description: 'Manage Atlas indexing, migrations, bridge discovery, merges, and maintenance.' },
 ];
 
 interface AtlasToolPoolOptions {
@@ -106,6 +111,8 @@ class AtlasToolClient {
     const specs: Array<[string, string]> = [
       ['../atlas/tools/changelog.js', 'registerChangelogTools'],
       ['../atlas/tools/commit.js', 'registerCommitTool'],
+      ['../atlas/tools/diff.js', 'registerDiffTool'],
+      ['../atlas/tools/worktree.js', 'registerWorktreeTools'],
       ['../atlas/tools/query.js', 'registerQueryTool'],
       ['../atlas/tools/graphComposite.js', 'registerGraphCompositeTool'],
       ['../atlas/tools/audit.js', 'registerAuditTool'],

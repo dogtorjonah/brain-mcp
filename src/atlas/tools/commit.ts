@@ -32,11 +32,14 @@ import type { AtlasFileRecord } from '../types.js';
 import { toolWithDescription } from './helpers.js';
 import { atlasCommitInputSchema, normalizeAtlasCommitPayload } from './commitPayload.js';
 import {
+  getAtlasChangelogByIdempotencyKey,
   getAtlasFile,
   insertAtlasChangelog,
+  insertAtlasOperatorMemory,
   upsertFileRecord,
   type AtlasChangelogRecord,
 } from '../db.js';
+import { autoSyncHazardsColumns, type AutoSyncDriftStats } from './hazardsAutoSync.js';
 import {
   refreshAtlasChangelogEmbedding,
   refreshAtlasFileEmbedding,
@@ -261,6 +264,10 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       '',
       '## Changelog — Built In (No Separate Call Needed)',
       'The `changelog_entry` field IS the changelog. Every call automatically creates a changelog entry from it. Include `patterns_added`, `patterns_removed`, `hazards_added`, `hazards_removed` to record what changed — this is what `atlas_changelog action=query` returns. You do NOT need a separate `atlas_changelog action=log` call.',
+      '',
+      '## Operator Memory — Candidate Notes',
+      '`operator_memory` records optional candidate observations about the operator: preferences, workflow instincts, boundaries, corrections, project taste, or stable context. These notes are stored as review_status="candidate" beside the changelog row; they are not treated as canon until separately reviewed.',
+      'Use this for durable operator-facing signals that future agents should consider. Do not store private speculation, casual mood, or one-off chatter.',
     ].join('\n'),
     atlasCommitInputSchema,
     async (rawArgs: Record<string, unknown>) => {
@@ -277,6 +284,8 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         commit_sha,
         author_instance_id,
         author_engine,
+        author_model,
+        author_engine_type,
         author_name,
         author_identity,
         review_entry_id,
@@ -286,10 +295,13 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         key_types,
         data_flows,
         hazards,
+        hazards_with_ranges,
         patterns,
+        tags,
         dependencies,
         blurb,
         source_highlights,
+        operator_memory,
         quiet,
       } = normalizeAtlasCommitPayload(rawArgs);
 
@@ -301,6 +313,8 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
       const resolvedAuthorIdentity = author_identity ?? envIdentity ?? author_name;
       const resolvedAuthorInstanceId = author_instance_id ?? envIdentity ?? null;
       const resolvedAuthorEngine = author_engine ?? (process.env.CLAUDE_ENGINE?.trim() || null);
+      const resolvedAuthorModel = author_model ?? (process.env.CLAUDE_MODEL?.trim() || null);
+      const resolvedAuthorEngineType = author_engine_type ?? (process.env.CLAUDE_ENGINE_TYPE?.trim() || null);
       const resolvedAuthorName = author_name ?? resolvedAuthorIdentity ?? null;
 
       // ── Step 0: Acquire atlas file claim ────────────────────────────────
@@ -332,12 +346,23 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
         // retry spirals polluting the changelog history.
         const currentFileHash = computeCurrentFileHash(file_path, runtime.config.sourceRoot);
         const idemKey = computeIdempotencyKey(runtime.config.workspace, file_path, resolvedSummary, currentFileHash);
+        const idemFingerprint = currentFileHash ?? 'no-hash';
         const idemHit = checkIdempotency(idemKey);
         if (idemHit) {
           return {
             content: [{
               type: 'text' as const,
               text: `♻️ #${idemHit.entryId} ${file_path} — duplicate suppressed (same summary + file hash within ${Math.round(IDEMPOTENCY_TTL_MS / 1000)}s window). Original commit kept.`,
+            }],
+          };
+        }
+        const persistedIdemHit = getAtlasChangelogByIdempotencyKey(runtime.db, runtime.config.workspace, idemKey);
+        if (persistedIdemHit && persistedIdemHit.idempotency_fingerprint === idemFingerprint) {
+          recordIdempotency(idemKey, persistedIdemHit.record.id, currentFileHash);
+          return {
+            content: [{
+              type: 'text' as const,
+              text: `♻️ #${persistedIdemHit.record.id} ${file_path} — duplicate suppressed (same summary + file hash already recorded). Original commit kept.`,
             }],
           };
         }
@@ -352,11 +377,13 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           mergedBlurb: string;
           mergedPatterns: string[];
           mergedHazards: string[];
+          mergedHazardsWithRanges: AtlasFileRecord['hazards_with_ranges'];
           mergedConventions: string[];
           mergedPublicApi: unknown[];
           mergedKeyTypes: unknown[];
           mergedDataFlows: string[];
           mergedSourceHighlights: AtlasFileRecord['source_highlights'];
+          hazardsDriftStats: AutoSyncDriftStats;
         }
 
         const writeCommit = runtime.db.transaction((): CommitWriteResult => {
@@ -373,12 +400,32 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
             commit_sha: resolvedSha,
             author_instance_id: resolvedAuthorInstanceId,
             author_engine: resolvedAuthorEngine,
+            author_model: resolvedAuthorModel,
+            author_engine_type: resolvedAuthorEngineType,
             author_name: resolvedAuthorName,
             author_identity: resolvedAuthorIdentity ?? null,
             review_entry_id: review_entry_id ?? null,
             source: 'atlas_commit',
+            idempotency_key: idemKey,
+            idempotency_fingerprint: idemFingerprint,
             created_at: changelogCreatedAt,
           });
+
+          for (const memoryCandidate of operator_memory ?? []) {
+            insertAtlasOperatorMemory(runtime.db, {
+              workspace: runtime.config.workspace,
+              changelog_id: entry.id,
+              file_path,
+              note: memoryCandidate.note,
+              category: memoryCandidate.category,
+              confidence: memoryCandidate.confidence,
+              evidence: memoryCandidate.evidence ?? null,
+              author_instance_id: resolvedAuthorInstanceId,
+              author_engine: resolvedAuthorEngine,
+              author_name: resolvedAuthorName,
+              source: 'atlas_commit',
+            });
+          }
 
           // Inline atlas_files update (required). Read existing record to merge
           // with — only overwrite fields the agent explicitly provided.
@@ -387,7 +434,14 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           const mergedPurpose = purpose ?? existing?.purpose ?? '';
           const mergedBlurb = blurb ?? existing?.blurb ?? '';
           const mergedPatterns = patterns ?? existing?.patterns ?? [];
-          const mergedHazards = hazards ?? existing?.hazards ?? [];
+          const mergedTags = tags ?? existing?.tags ?? [];
+          const rawMergedHazards = hazards ?? existing?.hazards ?? [];
+          const rawMergedHazardsWithRanges = hazards_with_ranges ?? existing?.hazards_with_ranges ?? [];
+          const {
+            syncedHazards: mergedHazards,
+            syncedHazardsWithRanges: mergedHazardsWithRanges,
+            driftStats: hazardsDriftStats,
+          } = autoSyncHazardsColumns(rawMergedHazards, rawMergedHazardsWithRanges);
           const mergedConventions = conventions ?? existing?.conventions ?? [];
           const mergedPublicApi = public_api ?? existing?.public_api ?? [];
           const mergedExports = public_api
@@ -409,10 +463,12 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
             public_api: mergedPublicApi,
             exports: mergedExports,
             patterns: mergedPatterns,
+            tags: mergedTags,
             dependencies: mergedDependencies,
             data_flows: mergedDataFlows,
             key_types: mergedKeyTypes,
             hazards: mergedHazards,
+            hazards_with_ranges: mergedHazardsWithRanges,
             conventions: mergedConventions,
             cross_refs: existing?.cross_refs ?? null,
             source_highlights: mergedSourceHighlights,
@@ -442,11 +498,13 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
             mergedBlurb,
             mergedPatterns,
             mergedHazards,
+            mergedHazardsWithRanges,
             mergedConventions,
             mergedPublicApi,
             mergedKeyTypes,
             mergedDataFlows,
             mergedSourceHighlights,
+            hazardsDriftStats,
           };
         });
 
@@ -457,11 +515,13 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           mergedBlurb,
           mergedPatterns,
           mergedHazards,
+          mergedHazardsWithRanges,
           mergedConventions,
           mergedPublicApi,
           mergedKeyTypes,
           mergedDataFlows,
           mergedSourceHighlights,
+          hazardsDriftStats,
         } = writeCommit() as CommitWriteResult;
         recordIdempotency(idemKey, entry.id, currentFileHash);
 
@@ -542,11 +602,14 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
             blurb !== undefined && 'blurb',
             patterns !== undefined && 'patterns',
             hazards !== undefined && 'hazards',
+            hazards_with_ranges !== undefined && 'hazards_with_ranges',
             conventions !== undefined && 'conventions',
             key_types !== undefined && 'key_types',
             data_flows !== undefined && 'data_flows',
             public_api !== undefined && 'public_api',
             source_highlights !== undefined && 'source_highlights',
+            tags !== undefined && 'tags',
+            operator_memory !== undefined && `operator_memory (${operator_memory.length} candidates)`,
             dependencies !== undefined && 'dependencies',
           ].filter(Boolean).join(', ');
           const tierTag = `tier=${completeness.tier}`;
@@ -589,14 +652,23 @@ export function registerCommitTool(server: McpServer, runtime: AtlasRuntime): vo
           public_api !== undefined && 'public_api',
           patterns !== undefined && 'patterns',
           hazards !== undefined && 'hazards',
+          hazards_with_ranges !== undefined && `hazards_with_ranges (${mergedHazardsWithRanges.length} entries)`,
           conventions !== undefined && 'conventions',
           key_types !== undefined && 'key_types',
           data_flows !== undefined && 'data_flows',
           dependencies !== undefined && 'dependencies',
           blurb !== undefined && 'blurb',
+          tags !== undefined && 'tags',
           source_highlights !== undefined && `source_highlights (${source_highlights?.length ?? 0} snippets)`,
+          operator_memory !== undefined && `operator_memory (${operator_memory.length} candidates)`,
         ].filter(Boolean);
         parts.push(`Atlas entry updated: ${fields.join(', ')}`);
+        if (hazardsDriftStats.legacyOrphansAdded > 0 || hazardsDriftStats.structuredOrphansAdded > 0) {
+          parts.push(
+            `Hazards auto-sync: ${hazardsDriftStats.legacyOrphansAdded} legacy -> structured, ` +
+            `${hazardsDriftStats.structuredOrphansAdded} structured -> legacy`,
+          );
+        }
         parts.push(
           `Tier: ${completeness.tier}${completeness.loc > 0 ? ` (${completeness.loc} LOC)` : ''} — ${completeness.rationale}`,
         );

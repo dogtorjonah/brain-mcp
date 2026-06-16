@@ -17,7 +17,7 @@ import { toolWithDescription } from './helpers.js';
 import { trackQuery } from '../queryLog.js';
 import { discoverWorkspaces, resolveWorkspaceDb } from './bridge.js';
 
-interface RankedResult {
+export interface RankedResult {
   file_path: string;
   score: number;
   record: AtlasFileRecord;
@@ -154,7 +154,7 @@ function formatResultWithWorkspace(result: RankedResult, ws: string, showWorkspa
 // Primary path: BM25 full-text search via FTS5.
 // No API key required — search quality improves organically as agents
 // populate metadata via atlas_commit.
-async function searchOneWorkspace(
+export async function searchOneWorkspace(
   runtime: AtlasRuntime,
   db: AtlasDatabase,
   ws: string,

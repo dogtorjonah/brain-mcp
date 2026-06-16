@@ -13,6 +13,8 @@ import { runPlanContextTool } from './plan_context.js';
 import { runClusterTool, runClusterCatalog } from './cluster.js';
 import { runPatternsTool } from './patterns.js';
 import { runHistoryTool } from './history.js';
+import { runCatalogTool } from './catalog.js';
+import { runAskTool } from './ask.js';
 import { coercedOptionalBoolean } from '../../zodHelpers.js';
 
 // NOTE: numeric fields use `z.coerce.number()` rather than `z.number()` because
@@ -25,14 +27,18 @@ import { coercedOptionalBoolean } from '../../zodHelpers.js';
 // booleans while rejecting other values (the `z.coerce.boolean()` alternative
 // is a footgun because `Boolean("false") === true`).
 export const atlasQuerySchema = {
-  action: z.enum(['search', 'lookup', 'brief', 'snippet', 'similar', 'plan_context', 'cluster', 'patterns', 'history']),
+  action: z.enum(['search', 'lookup', 'brief', 'snippet', 'similar', 'plan_context', 'cluster', 'patterns', 'history', 'catalog', 'ask']),
   workspace: z.string().optional(),
   file_path: z.string().optional(),
   filePath: z.string().optional(),
+  path_prefix: z.string().optional(),
+  pathPrefix: z.string().optional(),
   query: z.string().optional(),
   limit: z.coerce.number().int().optional(),
   offset: z.coerce.number().int().min(0).optional(),
   format: z.enum(['json', 'text']).optional(),
+  field: z.enum(['blurb', 'purpose']).optional(),
+  target: z.enum(['blurb', 'purpose']).optional(),
   symbol: z.string().optional(),
   start_line: z.coerce.number().int().optional(),
   end_line: z.coerce.number().int().optional(),
@@ -180,7 +186,7 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       'YOUR PRIMARY TOOL — use atlas_query BEFORE grep, rg, Read, or any raw file exploration.',
       'The atlas already knows what every file does, what it exports, what depends on it, and what patterns it uses. Raw code reads should only happen AFTER atlas_query tells you which files and lines matter.',
       '',
-      'Actions: search finds likely files for a concept or task; lookup gives the full structured atlas record for one file; brief is the fastest orientation screen; snippet extracts exact code by symbol or line range; similar finds semantically related files; plan_context builds a compact execution context for a task; cluster lists every file in a domain; patterns finds files using a named implementation pattern; history shows changelog and verification history for a file or cluster.',
+      'Actions: search finds likely files for a concept or task; lookup gives the full structured atlas record for one file; brief is the fastest orientation screen; snippet extracts exact code by symbol or line range; similar finds semantically related files; plan_context builds a compact execution context for a task; cluster lists every file in a domain; patterns finds files using a named implementation pattern; history shows changelog and verification history for a file or cluster; catalog pages file blurbs/purposes for broad orientation; ask returns a cited BM25/FTS evidence bundle for a natural-language question.',
       '',
       'Instead of grep → use search. Instead of Read → use lookup or brief. Instead of reading multiple files → use plan_context. Instead of git log → use history. Instead of find/glob → use similar.',
       '',
@@ -192,10 +198,14 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       workspace,
       file_path,
       filePath,
+      path_prefix,
+      pathPrefix,
       query,
       limit,
       offset,
       format,
+      field,
+      target,
       symbol,
       start_line,
       end_line,
@@ -221,14 +231,18 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
       until,
       breaking_changes,
     }: {
-      action: 'search' | 'lookup' | 'brief' | 'snippet' | 'similar' | 'plan_context' | 'cluster' | 'patterns' | 'history';
+      action: 'search' | 'lookup' | 'brief' | 'snippet' | 'similar' | 'plan_context' | 'cluster' | 'patterns' | 'history' | 'catalog' | 'ask';
       workspace?: string;
       file_path?: string;
       filePath?: string;
+      path_prefix?: string;
+      pathPrefix?: string;
       query?: string;
       limit?: number;
       offset?: number;
       format?: 'json' | 'text';
+      field?: 'blurb' | 'purpose';
+      target?: 'blurb' | 'purpose';
       symbol?: string;
       start_line?: number;
       end_line?: number;
@@ -345,6 +359,22 @@ export function registerQueryTool(server: McpServer, runtime: AtlasRuntime): voi
             limit,
             format,
           });
+        case 'catalog':
+          return runCatalogTool(runtime, {
+            workspace,
+            cluster,
+            query,
+            path_prefix,
+            pathPrefix,
+            field,
+            target,
+            limit,
+            offset,
+            format,
+          });
+        case 'ask':
+          if (!query) return missing('query');
+          return runAskTool(runtime, { query, workspace, limit, format });
       }
     },
   );

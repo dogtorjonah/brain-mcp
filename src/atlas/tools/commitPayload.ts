@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { coercedOptionalBoolean } from '../../zodHelpers.js';
+import type { AtlasHazardWithRange } from '../types.js';
 
 export interface NormalizedAtlasCommitSourceHighlight {
   id: number;
@@ -14,6 +15,22 @@ export interface NormalizedAtlasCommitPublicApiEntry {
   type: string;
   signature?: string;
   description?: string;
+}
+
+export type NormalizedAtlasOperatorMemoryCategory =
+  | 'preference'
+  | 'workflow'
+  | 'boundary'
+  | 'taste'
+  | 'context'
+  | 'correction';
+export type NormalizedAtlasOperatorMemoryConfidence = 'low' | 'medium' | 'high';
+
+export interface NormalizedAtlasOperatorMemoryCandidate {
+  note: string;
+  category?: NormalizedAtlasOperatorMemoryCategory;
+  confidence?: NormalizedAtlasOperatorMemoryConfidence;
+  evidence?: string;
 }
 
 /**
@@ -36,6 +53,8 @@ export interface NormalizedAtlasCommitPayload {
   commit_sha?: string;
   author_instance_id?: string;
   author_engine?: string;
+  author_model?: string;
+  author_engine_type?: string;
   author_name?: string;
   author_identity?: string;
   review_entry_id?: string;
@@ -46,13 +65,18 @@ export interface NormalizedAtlasCommitPayload {
   key_types?: string[];
   data_flows?: string[];
   hazards?: string[];
+  hazards_with_ranges?: AtlasHazardWithRange[];
   patterns?: string[];
+  tags?: string[];
   dependencies?: Record<string, unknown>;
   blurb?: string;
   source_highlights?: NormalizedAtlasCommitSourceHighlight[];
+  operator_memory?: NormalizedAtlasOperatorMemoryCandidate[];
 }
 
 const stringListInputSchema = z.union([z.array(z.string()), z.string()]);
+const operatorMemoryCategorySchema = z.enum(['preference', 'workflow', 'boundary', 'taste', 'context', 'correction']);
+const operatorMemoryConfidenceSchema = z.enum(['low', 'medium', 'high']);
 const publicApiLooseEntrySchema = z.object({
   name: z.string().optional(),
   symbol: z.string().optional(),
@@ -76,6 +100,25 @@ const sourceHighlightLooseEntrySchema = z.object({
   content: z.string().optional(),
   text: z.string().optional(),
   snippet: z.string().optional(),
+});
+const hazardWithRangeLooseEntrySchema = z.object({
+  text: z.string().optional(),
+  hazard: z.string().optional(),
+  summary: z.string().optional(),
+  startLine: z.union([z.number(), z.string()]).optional(),
+  start_line: z.union([z.number(), z.string()]).optional(),
+  start: z.union([z.number(), z.string()]).optional(),
+  endLine: z.union([z.number(), z.string()]).optional(),
+  end_line: z.union([z.number(), z.string()]).optional(),
+  end: z.union([z.number(), z.string()]).optional(),
+});
+const operatorMemoryLooseEntrySchema = z.object({
+  note: z.string().optional(),
+  text: z.string().optional(),
+  memory: z.string().optional(),
+  category: operatorMemoryCategorySchema.optional(),
+  confidence: operatorMemoryConfidenceSchema.optional(),
+  evidence: z.string().optional(),
 });
 
 /**
@@ -124,6 +167,10 @@ export const atlasCommitInputSchema = {
   authorInstanceId: z.string().optional().describe('Compatibility alias for author_instance_id.'),
   author_engine: z.string().optional(),
   authorEngine: z.string().optional().describe('Compatibility alias for author_engine.'),
+  author_model: z.string().optional(),
+  authorModel: z.string().optional().describe('Compatibility alias for author_model.'),
+  author_engine_type: z.string().optional(),
+  authorEngineType: z.string().optional().describe('Compatibility alias for author_engine_type.'),
   author_name: z.string().optional(),
   author_identity: z.string().optional(),
   authorIdentity: z.string().optional().describe('Compatibility alias for author_identity.'),
@@ -140,13 +187,21 @@ export const atlasCommitInputSchema = {
   data_flows: stringListInputSchema.optional(),
   dataFlows: stringListInputSchema.optional().describe('Compatibility alias for data_flows.'),
   hazards: stringListInputSchema.optional(),
+  hazards_with_ranges: z.union([z.array(hazardWithRangeLooseEntrySchema), z.record(z.string(), z.unknown()), z.string()]).optional(),
+  hazardsWithRanges: z.union([z.array(hazardWithRangeLooseEntrySchema), z.record(z.string(), z.unknown()), z.string()]).optional().describe('Compatibility alias for hazards_with_ranges.'),
   patterns: stringListInputSchema.optional(),
+  tags: stringListInputSchema.optional(),
   dependencies: z.record(z.string(), z.unknown()).optional(),
   blurb: z.string().min(20).describe(
     'REQUIRED. Tweet-length file identity, 20-280 chars. Used in compact neighbor listings and search results. Describes what the file IS, not what changed. Example: "Job generation router dispatching to section-specific processors".',
   ),
   source_highlights: z.union([z.array(sourceHighlightLooseEntrySchema), z.record(z.string(), z.unknown()), z.string()]).optional(),
   sourceHighlights: z.union([z.array(sourceHighlightLooseEntrySchema), z.record(z.string(), z.unknown()), z.string()]).optional().describe('Compatibility alias for source_highlights.'),
+  operator_memory: z.union([z.array(operatorMemoryLooseEntrySchema), operatorMemoryLooseEntrySchema, z.string()]).optional().describe(
+    'Optional operator-memory candidate(s): durable observations about the operator preference, workflow, boundary, taste, context, or correction. Stored as candidate notes for review, not canon.',
+  ),
+  operatorMemory: z.union([z.array(operatorMemoryLooseEntrySchema), operatorMemoryLooseEntrySchema, z.string()]).optional().describe('Compatibility alias for operator_memory.'),
+  jonah: z.union([z.array(operatorMemoryLooseEntrySchema), operatorMemoryLooseEntrySchema, z.string()]).optional().describe('Legacy compatibility alias for operator_memory; new callers should use operator_memory.'),
 } satisfies z.ZodRawShape;
 
 function toTrimmedString(value: unknown): string | undefined {
@@ -315,6 +370,65 @@ function normalizeSourceHighlights(value: unknown): NormalizedAtlasCommitSourceH
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function normalizeHazardsWithRanges(value: unknown): AtlasHazardWithRange[] | undefined {
+  const parsed = parseJsonIfString(value);
+  const input = Array.isArray(parsed) ? parsed : (parsed && typeof parsed === 'object' ? [parsed] : []);
+  const normalized: AtlasHazardWithRange[] = [];
+  for (const entry of input) {
+    if (typeof entry === 'string') {
+      const text = entry.trim();
+      if (text) normalized.push({ text, startLine: null, endLine: null });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const text = toTrimmedString(record.text ?? record.hazard ?? record.summary);
+    if (!text) continue;
+
+    const startRaw = record.startLine ?? record.start_line ?? record.start;
+    const endRaw = record.endLine ?? record.end_line ?? record.end;
+    const startLine = startRaw == null ? null : Number(startRaw);
+    const endLine = endRaw == null ? null : Number(endRaw);
+
+    normalized.push({
+      text,
+      startLine: Number.isFinite(startLine) ? Math.floor(startLine as number) : null,
+      endLine: Number.isFinite(endLine) ? Math.floor(endLine as number) : null,
+    });
+  }
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function normalizeOperatorMemory(value: unknown): NormalizedAtlasOperatorMemoryCandidate[] | undefined {
+  const parsed = parseJsonIfString(value);
+  const input = Array.isArray(parsed) ? parsed : (parsed !== undefined ? [parsed] : []);
+  const normalized: NormalizedAtlasOperatorMemoryCandidate[] = [];
+  for (const entry of input) {
+    if (typeof entry === 'string') {
+      const note = entry.trim();
+      if (note) normalized.push({ note });
+      continue;
+    }
+    if (!entry || typeof entry !== 'object') continue;
+    const record = entry as Record<string, unknown>;
+    const note = toTrimmedString(record.note ?? record.text ?? record.memory);
+    if (!note) continue;
+    const candidate: NormalizedAtlasOperatorMemoryCandidate = { note };
+    const category = toTrimmedString(record.category);
+    if (category && operatorMemoryCategorySchema.safeParse(category).success) {
+      candidate.category = category as NormalizedAtlasOperatorMemoryCategory;
+    }
+    const confidence = toTrimmedString(record.confidence);
+    if (confidence && operatorMemoryConfidenceSchema.safeParse(confidence).success) {
+      candidate.confidence = confidence as NormalizedAtlasOperatorMemoryConfidence;
+    }
+    const evidence = toTrimmedString(record.evidence);
+    if (evidence) candidate.evidence = evidence;
+    normalized.push(candidate);
+  }
+  return normalized.length > 0 ? normalized : undefined;
+}
+
 const CANONICAL_OUTPUT_KEYS = [
   'file_path',
   'changelog_entry',
@@ -328,6 +442,8 @@ const CANONICAL_OUTPUT_KEYS = [
   'commit_sha',
   'author_instance_id',
   'author_engine',
+  'author_model',
+  'author_engine_type',
   'author_name',
   'author_identity',
   'review_entry_id',
@@ -338,10 +454,13 @@ const CANONICAL_OUTPUT_KEYS = [
   'key_types',
   'data_flows',
   'hazards',
+  'hazards_with_ranges',
   'patterns',
+  'tags',
   'dependencies',
   'blurb',
   'source_highlights',
+  'operator_memory',
 ] as const;
 
 export function normalizeAtlasCommitPayload(input: Record<string, unknown>): NormalizedAtlasCommitPayload {
@@ -361,12 +480,17 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
     ['data_flows', 'dataFlows'],
     ['public_api', 'publicApi'],
     ['source_highlights', 'sourceHighlights'],
+    ['operator_memory', 'operatorMemory'],
+    ['operator_memory', 'jonah'],
     ['patterns_added', 'patternsAdded'],
     ['patterns_removed', 'patternsRemoved'],
     ['hazards_added', 'hazardsAdded'],
     ['hazards_removed', 'hazardsRemoved'],
+    ['hazards_with_ranges', 'hazardsWithRanges'],
     ['author_instance_id', 'authorInstanceId'],
     ['author_engine', 'authorEngine'],
+    ['author_model', 'authorModel'],
+    ['author_engine_type', 'authorEngineType'],
     ['author_identity', 'authorIdentity'],
     ['author_name', 'authorName'],
   ];
@@ -436,13 +560,19 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
   const authorEngine = toTrimmedString(payload.author_engine);
   if (authorEngine) payload.author_engine = authorEngine;
 
+  const authorModel = toTrimmedString(payload.author_model);
+  if (authorModel) payload.author_model = authorModel;
+
+  const authorEngineType = toTrimmedString(payload.author_engine_type);
+  if (authorEngineType) payload.author_engine_type = authorEngineType;
+
   const authorName = toTrimmedString(payload.author_name);
   if (authorName) payload.author_name = authorName;
 
   const authorIdentity = toTrimmedString(payload.author_identity);
   if (authorIdentity) payload.author_identity = authorIdentity;
 
-  for (const key of ['patterns_added', 'patterns_removed', 'hazards_added', 'hazards_removed', 'conventions', 'key_types', 'data_flows', 'hazards', 'patterns'] as const) {
+  for (const key of ['patterns_added', 'patterns_removed', 'hazards_added', 'hazards_removed', 'conventions', 'key_types', 'data_flows', 'hazards', 'patterns', 'tags'] as const) {
     const normalized = toStringList(payload[key]);
     if (normalized) payload[key] = normalized;
   }
@@ -453,6 +583,14 @@ export function normalizeAtlasCommitPayload(input: Record<string, unknown>): Nor
 
   if (payload.source_highlights !== undefined) {
     payload.source_highlights = normalizeSourceHighlights(payload.source_highlights) ?? [];
+  }
+
+  if (payload.hazards_with_ranges !== undefined) {
+    payload.hazards_with_ranges = normalizeHazardsWithRanges(payload.hazards_with_ranges) ?? [];
+  }
+
+  if (payload.operator_memory !== undefined) {
+    payload.operator_memory = normalizeOperatorMemory(payload.operator_memory) ?? [];
   }
 
   const rawBreakingChanges = payload.breaking_changes;
